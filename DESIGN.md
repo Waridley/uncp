@@ -18,6 +18,7 @@ This document outlines the architecture for a comprehensive duplicate file detec
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   CLI Client    │    │   GUI Client    │    │   TUI Client    │
+│   (Pipelined)   │    │  (Responsive)   │    │  (Responsive)   │
 └─────────┬───────┘    └─────────┬───────┘    └─────────┬───────┘
           │                      │                      │
           └──────────────────────┼──────────────────────┘
@@ -32,6 +33,7 @@ This document outlines the architecture for a comprehensive duplicate file detec
                     │   - SystemScheduler        │
                     │   - MemoryManager          │
                     │   - RelationStore          │
+                    │   - CacheManager           │
                     └─────────────┬───────────────┘
                                   │
           ┌───────────────────────┼───────────────────────┐
@@ -61,57 +63,57 @@ The system uses a single primary DataFrame in `ScanState` containing all file me
 #### Primary Data Schema
 ```rust
 // Core file identity and metadata
-path: String                    // Unique file path
-size: UInt64                   // File size in bytes
-modified_ns: Int64             // Last modified timestamp
-file_type: String              // FileKind enum as string
+path: String                     // Unique file path
+size: UInt64                     // File size in bytes
+modified: Datetime               // Last modified timestamp
+file_type: String                // FileKind enum as string
 
 // Processing state flags (ECS-style components)
-content_loaded: Boolean        // Has file content been loaded
-hashed: Boolean               // Have hashes been computed
-similarity_computed: Boolean   // Has similarity analysis been done
+content_loaded: Boolean          // Has file content been loaded
+hashed: Boolean                  // Have hashes been computed
+similarity_computed: Boolean     // Has similarity analysis been done
 
 // Scan metadata
-scan_id: UInt32               // Incremental scan identifier
-last_processed: Int64         // When this file was last processed
+scan_id: UInt32                  // Incremental scan identifier
+last_processed: Datetime         // When this file was last processed
 ```
 
 #### Hash Data (stored in main DataFrame)
 ```rust
-blake3_hash: String           // Exact content hash
-perceptual_hash: String       // Image perceptual hash
-text_hash: String            // Text content hash
+blake3_hash: String             // Exact content hash
+perceptual_hash: String         // Image perceptual hash
+text_hash: String               // Text content hash
 ```
 
 ### 3.2 Relational Data Store
 
 #### Hash Relations (Value-Indexed)
 ```rust
-hash_value: String            // The actual hash
-hash_type: String            // "blake3", "perceptual", etc.
-file_paths: List<String>     // All files with this hash
-first_seen: Int64            // When first discovered
-file_count: UInt32           // Number of files with this hash
+hash_value: String             // The actual hash
+hash_type: String              // "blake3", "perceptual", etc.
+file_paths: List<String>       // All files with this hash
+first_seen: Datetime           // When first discovered
+file_count: UInt32             // Number of files with this hash
 ```
 
 #### Similarity Groups (Group-Indexed)
 ```rust
-group_id: String             // UUID or hash of group
-group_type: String           // "text_similar", "image_cluster", etc.
-file_paths: List<String>     // Files in this similarity group
-metadata: String             // JSON blob for group-specific data
-created_at: Int64            // When group was created
-similarity_threshold: Float64 // Threshold used for grouping
+group_id: String               // UUID or hash of group
+group_type: String             // "text_similar", "image_cluster", etc.
+file_paths: List<String>       // Files in this similarity group
+metadata: String               // JSON blob for group-specific data
+created_at: Datetime           // When group was created
+similarity_threshold: Float64  // Threshold used for grouping
 ```
 
 #### Pairwise Relations
 ```rust
-path_a: String               // First file path
-path_b: String               // Second file path
-relation_type: String        // "text_diff", "image_distance", etc.
-score: Float64               // Similarity score
-data: String                 // JSON blob for relation-specific data
-computed_at: Int64           // When relationship was computed
+path_a: String                 // First file path
+path_b: String                 // Second file path
+relation_type: String          // "text_diff", "image_distance", etc.
+score: Float64                 // Similarity score
+data: String                   // JSON blob for relation-specific data
+computed_at: Datetime          // When relationship was computed
 ```
 
 ## 4. System Architecture
@@ -193,7 +195,7 @@ pub struct SystemScheduler {
 pub struct MemoryManager {
     max_bytes: usize,                                    // Total memory limit
     current_bytes: Arc<AtomicUsize>,                    // Current usage
-    file_cache: Arc<RwLock<LruCache<PathBuf, FileContents>>>, // LRU cache
+    file_cache: LruCache<PathBuf, FileContents>,        // LRU cache (lock-free optimizations welcome)
 }
 ```
 
@@ -284,9 +286,144 @@ pub struct Query<'a> {
 - Duplicate groups with configurable similarity thresholds
 - Files that are duplicates in one dimension but unique in another
 
-## 8. API Design
+## 8. Client Interface Design
 
-### 8.1 Core API
+### 8.1 CLI Client (Pipelined)
+
+The CLI client is designed for automation and advanced scripting purposes:
+
+```rust
+// Supports streaming output for pipeline integration
+pub struct CliClient {
+    detector: DuplicateDetector,
+    output_format: OutputFormat, // JSON, CSV, TSV, etc.
+}
+
+impl CliClient {
+    pub async fn scan_and_stream(&mut self, paths: Vec<PathBuf>) -> impl Stream<Item = ScanEvent>;
+    pub async fn query_duplicates(&self, query: &str) -> Result<impl Stream<Item = DuplicateGroup>, CliError>;
+    pub fn export_results(&self, format: OutputFormat) -> Result<String, CliError>;
+}
+```
+
+**Key Features**:
+- Streaming output for real-time processing in pipelines
+- Multiple output formats (JSON, CSV, TSV) for integration
+- Scriptable query interface with SQL-like syntax
+- Batch processing capabilities for large datasets
+- Nushell integration built on existing polars plugin
+
+### 8.2 GUI Client (Responsive)
+
+The GUI client prioritizes responsiveness with lazy-loaded table views:
+
+```rust
+pub struct GuiClient {
+    detector: Arc<DuplicateDetector>,
+    table_manager: LazyTableManager,
+    update_channel: Receiver<UiUpdate>,
+}
+
+pub struct LazyTableManager {
+    visible_range: Range<usize>,
+    total_rows: usize,
+    cached_rows: LruCache<usize, TableRow>,
+    sort_column: Option<String>,
+    filter_predicate: Option<String>,
+}
+```
+
+**Key Features**:
+- Lazy-loaded table views that only render visible rows
+- Real-time updates without blocking the UI thread
+- Responsive sorting and filtering with incremental updates
+- Progress indicators with cancellation support
+
+### 8.3 TUI Client (Responsive)
+
+The TUI client provides a terminal-based interface with similar responsiveness:
+
+```rust
+pub struct TuiClient {
+    detector: Arc<DuplicateDetector>,
+    screen_manager: ScreenManager,
+    input_handler: InputHandler,
+}
+```
+
+**Key Features**:
+- Keyboard-driven navigation optimized for terminal use
+- Lazy table rendering similar to GUI client
+- Real-time progress display with ASCII progress bars
+- Efficient screen updates to minimize terminal flicker
+
+## 9. Disk Caching Strategy
+
+### 9.1 Cache Architecture
+
+The system implements intelligent disk caching to avoid recomputing results:
+
+```rust
+pub struct CacheManager {
+    cache_dir: PathBuf,
+    metadata_cache: MetadataCache,
+    dataframe_cache: DataFrameCache,
+    filesystem_monitor: FilesystemMonitor,
+}
+
+pub struct MetadataCache {
+    scan_metadata: HashMap<PathBuf, ScanMetadata>,
+    file_checksums: HashMap<PathBuf, FileChecksum>,
+}
+
+pub struct ScanMetadata {
+    scan_id: u32,
+    last_scan_time: SystemTime,
+    file_count: usize,
+    directory_tree_hash: String, // Hash of directory structure
+}
+```
+
+### 9.2 Cache Invalidation Strategy
+
+**Filesystem Change Detection**:
+- Directory tree hashing to detect structural changes
+- File modification time and size tracking
+- Incremental scanning for changed files only
+- Efficient diff computation between scan states
+
+**Cache Validation Process**:
+1. Compare directory tree hash with cached version
+2. Check modification times for files in cache
+3. Identify added, removed, or modified files
+4. Invalidate cache entries for changed files only
+5. Preserve valid cache entries to minimize recomputation
+
+### 9.3 Incremental Updates
+
+```rust
+impl CacheManager {
+    pub async fn load_or_create_cache(&mut self, scan_paths: &[PathBuf]) -> Result<CacheLoadResult, CacheError>;
+    pub async fn update_cache_incremental(&mut self, changes: &FilesystemChanges) -> Result<(), CacheError>;
+    pub fn compute_cache_validity(&self, scan_paths: &[PathBuf]) -> CacheValidityReport;
+}
+
+pub struct CacheLoadResult {
+    cached_data: Option<DataFrame>,
+    invalidated_paths: Vec<PathBuf>,
+    cache_hit_ratio: f64,
+}
+```
+
+**Benefits**:
+- Dramatically reduced startup time for repeated scans
+- Efficient handling of large, mostly-unchanged directory trees
+- Graceful degradation when cache is partially invalid
+- Configurable cache retention policies
+
+## 10. API Design
+
+### 10.1 Core API
 
 ```rust
 pub struct DuplicateDetector {
@@ -300,11 +437,16 @@ impl DuplicateDetector {
     pub async fn scan_directory(&mut self, path: PathBuf) -> Result<ScanResults, DetectorError>;
     pub async fn process_until_complete(&mut self) -> PolarsResult<()>;
     pub fn query(&self) -> Query;
-    pub fn raw_data(&self) -> &Arc<RwLock<DataFrame>>;
+    pub fn raw_data(&self) -> &DataFrame;
+
+    // Persistence operations for caching dataframes to disk
+    pub async fn save_cache(&self, cache_path: &Path) -> Result<(), DetectorError>;
+    pub async fn load_cache(&mut self, cache_path: &Path) -> Result<bool, DetectorError>;
+    pub fn is_cache_valid(&self, cache_path: &Path) -> Result<bool, DetectorError>;
 }
 ```
 
-### 8.2 High-Level Operations
+### 10.2 High-Level Operations
 
 ```rust
 impl DuplicateDetector {
@@ -315,7 +457,7 @@ impl DuplicateDetector {
 }
 ```
 
-### 8.3 Progress Monitoring
+### 10.3 Progress Monitoring
 
 ```rust
 pub struct ScanResults {
@@ -329,9 +471,9 @@ impl ScanResults {
 }
 ```
 
-## 9. Async Processing Pipeline
+## 11. Async Processing Pipeline
 
-### 9.1 Pipeline Architecture
+### 11.1 Pipeline Architecture
 
 ```
 File Discovery → Content Processing → Hash Computation → Similarity Analysis → Relation Building
@@ -342,140 +484,158 @@ Where:
 (N) = Multi-threaded stage (up to num_max_loaded_files)
 ```
 
-### 9.2 Channel-Based Communication
+### 11.2 Channel-Based Communication
 
 ```rust
 async fn run_pipeline(pipeline: ProcessingPipeline) {
     let (file_tx, file_rx) = smol::channel::bounded(100);
     let (processed_tx, processed_rx) = smol::channel::bounded(100);
-    
+
     // Stage 1: File discovery (single producer)
     let discovery_task = smol::spawn(discover_files(walker, file_tx));
-    
+
     // Stage 2: Content processing (multiple workers)
     let processing_tasks = (0..num_workers)
         .map(|_| smol::spawn(process_files(file_rx.clone(), processed_tx.clone())))
         .collect::<Vec<_>>();
-    
+
     // Stage 3: DataFrame updates (single consumer)
     let update_task = smol::spawn(update_dataframes(processed_rx, state));
-    
+
     futures::join!(discovery_task, futures::future::join_all(processing_tasks), update_task);
 }
 ```
 
-### 9.3 Backpressure Management
+### 11.3 Backpressure Management
 
 - **Bounded channels**: Prevent memory exhaustion
 - **Yield points**: Regular `smol::future::yield_now()` calls
 - **Memory monitoring**: Pause processing when memory limits approached
 - **Priority queuing**: High-priority files processed first
 
-## 10. Error Handling
+## 12. Error Handling
 
-### 10.1 Error Types
+### 12.1 Error Types
 
 ```rust
 #[derive(Debug, thiserror::Error)]
 pub enum DetectorError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
-    
+
     #[error("Polars error: {0}")]
     Polars(#[from] PolarsError),
-    
+
     #[error("Memory limit exceeded")]
     MemoryExhausted,
-    
+
     #[error("Invalid file type for operation: {0}")]
     InvalidFileType(String),
+
+    #[error("Cache error: {0}")]
+    Cache(#[from] CacheError),
 }
 ```
 
-### 10.2 Error Recovery
+### 12.2 Error Recovery
 
 - **Graceful degradation**: Skip problematic files, continue processing
 - **Logging**: Comprehensive error logging with `tracing`
 - **Partial results**: Return partial results even if some operations fail
 - **Retry logic**: Automatic retry for transient failures
+- **Cache recovery**: Fallback to full scan when cache is corrupted
 
-## 11. Performance Considerations
+## 13. Performance Considerations
 
-### 11.1 Polars Optimizations
+### 13.1 Polars Optimizations
 
 - **Lazy evaluation**: Use LazyFrame for complex queries
 - **Columnar operations**: Batch updates for efficiency
 - **Memory mapping**: For large DataFrames that exceed memory
 - **Predicate pushdown**: Filter early in query pipeline
 
-### 11.2 I/O Optimizations
+### 13.2 I/O Optimizations
 
 - **Async I/O**: Non-blocking file operations with smol
 - **Read-ahead**: Predictive file loading based on scan patterns
 - **Compression**: Optional compression for cached file contents
 - **Parallel processing**: Multiple files processed simultaneously
 
-### 11.3 Memory Optimizations
+### 13.3 Memory Optimizations
 
 - **Streaming**: Process large files in chunks
 - **Lazy loading**: Load file contents only when needed
 - **Smart caching**: LRU eviction with size-aware policies
 - **Memory pooling**: Reuse allocated buffers where possible
+- **Lock-free algorithms**: Preferred over `Arc<RwLock<...>>` where possible
 
-## 12. Testing Strategy
+### 13.4 Cache Optimizations
 
-### 12.1 Unit Testing
+- **Incremental updates**: Only reprocess changed files
+- **Compressed storage**: Efficient disk usage for cached DataFrames
+- **Parallel cache loading**: Load cache data concurrently with filesystem scanning
+- **Smart invalidation**: Minimize cache misses through intelligent change detection
+
+## 14. Testing Strategy
+
+### 14.1 Unit Testing
 
 - **System isolation**: Each system tested independently
 - **Mock data**: Synthetic DataFrames for testing
 - **Property testing**: Verify invariants across different inputs
 - **Performance testing**: Benchmark critical paths
+- **Cache testing**: Verify cache invalidation and loading logic
 
-### 12.2 Integration Testing
+### 14.2 Integration Testing
 
 - **End-to-end workflows**: Complete scan and duplicate detection
 - **Multi-client testing**: Verify API works across CLI/GUI/TUI
 - **Large dataset testing**: Performance with realistic file sets
 - **Memory pressure testing**: Behavior under memory constraints
+- **Cache integration**: Test cache persistence across application restarts
 
-### 12.3 Benchmarking
+### 14.3 Benchmarking
 
 - **Throughput**: Files processed per second
 - **Memory efficiency**: Peak memory usage vs. dataset size
 - **Query performance**: Response times for common queries
 - **Scalability**: Performance across different dataset sizes
+- **Cache performance**: Startup time improvements with cached data
+- **UI responsiveness**: Frame rates and input latency for GUI/TUI
 
-## 13. Future Extensions
+## 15. Future Extensions
 
-### 13.1 Additional Similarity Providers
+### 15.1 Additional Similarity Providers
 
 - **Audio fingerprinting**: For music duplicate detection
 - **Video analysis**: Frame-based similarity for videos
 - **Document similarity**: Semantic analysis for text documents
 - **Archive content**: Similarity based on archive contents
 
-### 13.2 Advanced Features
+### 15.2 Advanced Features
 
-- **Incremental scanning**: Detect changes since last scan
 - **Distributed processing**: Scale across multiple machines
 - **Machine learning**: Learn user preferences for duplicate handling
 - **Cloud storage**: Support for cloud-based file systems
+- **Watch mode**: Real-time monitoring of filesystem changes
 
-### 13.3 UI Enhancements
+### 15.3 UI Enhancements
 
-- **Real-time updates**: Live progress in GUI/TUI
 - **Interactive filtering**: Dynamic query building
 - **Batch operations**: Bulk duplicate resolution
 - **Visualization**: Graphical representation of file relationships
+- **Customizable layouts**: User-configurable interface arrangements
 
-## 14. Conclusion
+## 16. Conclusion
 
 This design provides a robust, scalable foundation for duplicate file detection that:
 
 - **Scales efficiently** with dataset size through columnar operations and async processing
-- **Remains responsive** through careful memory management and yielding
+- **Remains responsive** through careful memory management, yielding, and lazy UI updates
 - **Supports extension** via pluggable similarity providers and system architecture
-- **Provides flexibility** through comprehensive querying capabilities
-- **Maintains performance** through data-oriented design and Polars optimizations
+- **Provides flexibility** through comprehensive querying capabilities and multiple client interfaces
+- **Maintains performance** through data-oriented design, Polars optimizations, and intelligent caching
+- **Minimizes recomputation** through persistent disk caching with smart invalidation
+- **Optimizes for different use cases** with specialized CLI (pipelined), GUI (responsive), and TUI (responsive) clients
 
-The ECS-inspired architecture ensures that new functionality can be added without disrupting existing systems, while the relational data model provides efficient access patterns for both exact and similarity-based duplicate detection.
+The ECS-inspired architecture ensures that new functionality can be added without disrupting existing systems, while the relational data model provides efficient access patterns for both exact and similarity-based duplicate detection. The disk caching strategy dramatically improves startup performance for repeated scans, and the client-specific optimizations ensure each interface is tailored to its intended use case.
