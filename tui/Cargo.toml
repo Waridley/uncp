@@ -1,0 +1,9 @@
+[package]
+name = "uncp-tui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+uncp.path = ".."
+crossterm = "0.29.0"
+ratatui = "0.30.0-alpha.2"

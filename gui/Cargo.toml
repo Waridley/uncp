@@ -1,0 +1,9 @@
+[package]
+name = "uncp-gui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+uncp.path = ".."
+iced = { version = "0.13.1", features = ["smol", "image"] }
+tracing.workspace = true

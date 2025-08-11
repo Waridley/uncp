@@ -1,0 +1,3 @@
+[toolchain]
+channel = "stable" # Nightly is currently unable to compile the library
+components = ["rustfmt", "clippy"]

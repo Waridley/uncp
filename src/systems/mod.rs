@@ -1,0 +1,137 @@
+//! Processing systems for the duplicate detection pipeline
+
+use async_trait::async_trait;
+
+use crate::data::ScanState;
+use crate::memory::MemoryManager;
+use crate::error::{SystemError, SystemResult};
+
+pub mod discovery;
+pub mod hashing;
+pub mod scheduler;
+
+pub use discovery::FileDiscoverySystem;
+pub use hashing::ContentHashSystem;
+pub use scheduler::SystemScheduler;
+
+/// Common interface for all processing systems
+#[async_trait]
+pub trait SystemRunner: Send + Sync {
+    /// Run the system on the current state
+    async fn run(&self, state: &mut ScanState, memory_mgr: &mut MemoryManager) -> SystemResult<()>;
+    
+    /// Check if this system can run (dependencies met)
+    fn can_run(&self, state: &ScanState) -> bool;
+    
+    /// System priority (higher number = higher priority)
+    fn priority(&self) -> u8;
+    
+    /// System name for logging and identification
+    fn name(&self) -> &'static str;
+}
+
+/// System metadata interface
+pub trait System {
+    /// Columns required by this system
+    fn required_columns(&self) -> &[&'static str];
+    
+    /// Columns optionally used by this system
+    fn optional_columns(&self) -> &[&'static str];
+    
+    /// System description
+    fn description(&self) -> &'static str;
+}
+
+/// Progress information for system execution
+#[derive(Debug, Clone)]
+pub struct SystemProgress {
+    pub system_name: String,
+    pub total_items: usize,
+    pub processed_items: usize,
+    pub current_item: Option<String>,
+    pub estimated_remaining: Option<std::time::Duration>,
+}
+
+impl SystemProgress {
+    pub fn new(system_name: String, total_items: usize) -> Self {
+        Self {
+            system_name,
+            total_items,
+            processed_items: 0,
+            current_item: None,
+            estimated_remaining: None,
+        }
+    }
+
+    pub fn update(&mut self, processed: usize, current_item: Option<String>) {
+        self.processed_items = processed;
+        self.current_item = current_item;
+    }
+
+    pub fn progress_ratio(&self) -> f64 {
+        if self.total_items == 0 {
+            1.0
+        } else {
+            self.processed_items as f64 / self.total_items as f64
+        }
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.processed_items >= self.total_items
+    }
+}
+
+/// System execution context
+pub struct SystemContext {
+    pub max_concurrent_files: usize,
+    pub yield_interval: std::time::Duration,
+    pub progress_callback: Option<Box<dyn Fn(SystemProgress) + Send + Sync>>,
+}
+
+impl Default for SystemContext {
+    fn default() -> Self {
+        Self {
+            max_concurrent_files: num_cpus::get(),
+            yield_interval: std::time::Duration::from_millis(100),
+            progress_callback: None,
+        }
+    }
+}
+
+impl SystemContext {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_max_concurrent_files(mut self, max: usize) -> Self {
+        self.max_concurrent_files = max;
+        self
+    }
+
+    pub fn with_yield_interval(mut self, interval: std::time::Duration) -> Self {
+        self.yield_interval = interval;
+        self
+    }
+
+    pub fn with_progress_callback<F>(mut self, callback: F) -> Self
+    where
+        F: Fn(SystemProgress) + Send + Sync + 'static,
+    {
+        self.progress_callback = Some(Box::new(callback));
+        self
+    }
+
+    pub fn report_progress(&self, progress: SystemProgress) {
+        if let Some(ref callback) = self.progress_callback {
+            callback(progress);
+        }
+    }
+}
+
+/// Helper function to yield control periodically
+pub async fn yield_periodically(last_yield: &mut std::time::Instant, interval: std::time::Duration) {
+    if last_yield.elapsed() >= interval {
+        smol::future::yield_now().await;
+        *last_yield = std::time::Instant::now();
+    }
+}
