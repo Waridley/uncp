@@ -12,7 +12,7 @@ use futures_lite::future;
 use crossterm::event::{self, Event, KeyCode};
 use ratatui::{
 	layout::{Constraint, Direction, Layout},
-	style::{Color, Style},
+	style::{Color, Modifier, Style},
 	text::{Line, Span},
 	widgets::{Block, Borders, List, ListItem, Paragraph},
 	Frame,
@@ -345,18 +345,18 @@ fn draw_enhanced(
 		.constraints([
 			Constraint::Length(4), // header
 			Constraint::Min(5),    // body
-			Constraint::Length(5), // enhanced footer
+			Constraint::Length(5), // status footer
+			Constraint::Length(3), // keybinding hints
 		])
 		.split(frame.area());
 
-	// Header with key bindings
+	// Header with summary information
 	let header = Paragraph::new(Line::from(vec![
 		Span::styled("uncp TUI", Style::default().fg(Color::Cyan)),
 		Span::raw("  |  Total: "),
 		Span::raw(pres.total_files.to_string()),
 		Span::raw("  Pending: "),
 		Span::raw(pres.pending_hash.to_string()),
-		Span::raw("  |  Keys: q quit, r refresh, s scan, h hash, p path"),
 	]))
 	.block(Block::default().borders(Borders::ALL).title("Summary"));
 	frame.render_widget(header, chunks[0]);
@@ -472,6 +472,24 @@ fn draw_enhanced(
 	let footer = Paragraph::new(status_lines)
 		.block(Block::default().borders(Borders::ALL).title("Status"));
 	frame.render_widget(footer, chunks[2]);
+
+	// Keybinding hints at the bottom with distinct styling
+	let keybinding_hints = Paragraph::new(Line::from(vec![
+		Span::styled("Keys: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+		Span::styled("q", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::raw(" quit  "),
+		Span::styled("r", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::raw(" refresh  "),
+		Span::styled("s", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::raw(" scan  "),
+		Span::styled("h", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::raw(" hash  "),
+		Span::styled("p", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::raw(" path"),
+	]))
+	.block(Block::default().borders(Borders::ALL).title("Controls"))
+	.style(Style::default().bg(Color::DarkGray));
+	frame.render_widget(keybinding_hints, chunks[3]);
 }
 
 fn handle_events(in_input: bool, input_buffer: &mut String) -> std::io::Result<Option<Action>> {
