@@ -14,7 +14,7 @@ use ratatui::{
 	layout::{Constraint, Direction, Flex, Layout, Rect},
 	style::{Color, Modifier, Style},
 	text::{Line, Span},
-	widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+	widgets::{Block, Borders, Clear, Paragraph, Table, Row, Cell, TableState},
 	Frame,
 };
 
@@ -128,12 +128,16 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 	let mut pres = PresentationState::default()
 		.with_status("Press 's' to scan, 'h' to hash, 'r' to refresh, 'q' to quit");
 
+	// Table selection/scroll state
+	let mut table_state = TableState::default();
+	let mut selected_idx: usize = 0;
+
 	loop {
-		if let Some(action) = handle_events(in_path_input, &mut input_buffer)? {
+		for action in handle_events(in_path_input, &mut input_buffer)? {
 			match action {
 				Action::Quit => {
 					info!("Quitting...");
-					break Ok(());
+					return Ok(());
 				}
 				Action::Refresh => {
 					info!("Refreshing...");
@@ -195,6 +199,43 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 					let _ = cmds.try_send(EngineCommand::Start);
 					pres = pres.clone().with_status("Hashing started...");
 				}
+				Action::Up => {
+					if selected_idx > 0 {
+						selected_idx -= 1;
+					}
+					table_state.select(Some(selected_idx));
+				}
+				Action::Down => {
+					let total = pres.file_table.len();
+					if total > 0 && selected_idx + 1 < total {
+						selected_idx += 1;
+					}
+					table_state.select(Some(selected_idx));
+				}
+				Action::PageUp => {
+					let step = 10usize;
+					selected_idx = selected_idx.saturating_sub(step);
+					table_state.select(Some(selected_idx));
+				}
+				Action::PageDown => {
+					let total = pres.file_table.len();
+					let step = 10usize;
+					if total > 0 {
+						selected_idx = (selected_idx + step).min(total.saturating_sub(1));
+					}
+					table_state.select(Some(selected_idx));
+				}
+				Action::Home => {
+					selected_idx = 0;
+					table_state.select(Some(selected_idx));
+				}
+				Action::End => {
+					let total = pres.file_table.len();
+					if total > 0 {
+						selected_idx = total - 1;
+					}
+					table_state.select(Some(selected_idx));
+				}
 			}
 		}
 		// Update progress and re-render every loop
@@ -210,6 +251,15 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 						snap.total_files, snap.pending_hash
 					);
 					pres = snap;
+				// Clamp selection within bounds when data changes
+				let total = pres.file_table.len();
+				if total == 0 {
+					selected_idx = 0;
+					table_state.select(None);
+				} else {
+					if selected_idx >= total { selected_idx = total - 1; }
+					table_state.select(Some(selected_idx));
+				}
 				}
 				EngineEvent::Started => {
 					debug!("TUI: Engine started");
@@ -342,6 +392,7 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 				&current_discovery_progress,
 				&current_hashing_progress,
 				processing_speed,
+				&mut table_state,
 			)
 		})?;
 	}
@@ -356,6 +407,12 @@ enum Action {
 	EnterPathMode,
 	CancelPath,
 	SubmitPath,
+	Up,
+	Down,
+	PageUp,
+	PageDown,
+	Home,
+	End,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -369,6 +426,7 @@ fn draw_enhanced(
 	discovery_progress: &Option<uncp::systems::SystemProgress>,
 	hashing_progress: &Option<uncp::systems::SystemProgress>,
 	processing_speed: Option<f64>,
+	table_state: &mut TableState,
 ) {
 	let chunks = Layout::default()
 		.direction(Direction::Vertical)
@@ -391,14 +449,48 @@ fn draw_enhanced(
 	.block(Block::default().borders(Borders::ALL).title("Summary"));
 	frame.render_widget(header, chunks[0]);
 
-	// Body: list by type
-	let items: Vec<ListItem> = pres
-		.by_type
+	// Body: file table sorted by size
+	let title = if pres.current_path_filter.is_empty() {
+		"Files (sorted by size)".to_string()
+	} else {
+		format!("Files in '{}' (sorted by size)", pres.current_path_filter)
+	};
+
+	// Always show file table
+	let header = Row::new(vec![
+		Cell::from("Path"),
+		Cell::from("Size"),
+		Cell::from("Type"),
+		Cell::from("Hashed"),
+	])
+	.style(Style::default().add_modifier(Modifier::BOLD));
+
+	let rows: Vec<Row> = pres
+		.file_table
 		.iter()
-		.map(|(k, v)| ListItem::new(format!("{:<16} {:>8}", k, v)))
+		.map(|(path, size, file_type, hashed)| {
+			let size_str = format_file_size(*size);
+			let hashed_str = if *hashed { "✓" } else { "○" };
+			Row::new(vec![
+				Cell::from(path.as_str()),
+				Cell::from(size_str),
+				Cell::from(file_type.as_str()),
+				Cell::from(hashed_str),
+			])
+		})
 		.collect();
-	let list = List::new(items).block(Block::default().borders(Borders::ALL).title("By Type"));
-	frame.render_widget(list, chunks[1]);
+
+	let table = Table::new(rows, [
+		Constraint::Percentage(60), // Path
+		Constraint::Percentage(15), // Size
+		Constraint::Percentage(15), // Type
+		Constraint::Percentage(10), // Hashed
+	])
+	.header(header)
+	.row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+	.block(Block::default().borders(Borders::ALL).title(title));
+
+	frame.render_stateful_widget(table, chunks[1], table_state);
 
 	// Enhanced footer with detailed status
 	let mut status_lines = Vec::new();
@@ -520,41 +612,31 @@ fn draw_enhanced(
 				.fg(Color::Yellow)
 				.add_modifier(Modifier::BOLD),
 		),
-		Span::styled(
-			"q",
-			Style::default()
-				.fg(Color::Green)
-				.add_modifier(Modifier::BOLD),
-		),
+		// App control
+		Span::styled("q", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
 		Span::raw(" quit  "),
-		Span::styled(
-			"r",
-			Style::default()
-				.fg(Color::Green)
-				.add_modifier(Modifier::BOLD),
-		),
+		Span::styled("r", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
 		Span::raw(" refresh  "),
-		Span::styled(
-			"s",
-			Style::default()
-				.fg(Color::Green)
-				.add_modifier(Modifier::BOLD),
-		),
+		Span::styled("s", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
 		Span::raw(" scan  "),
-		Span::styled(
-			"h",
-			Style::default()
-				.fg(Color::Green)
-				.add_modifier(Modifier::BOLD),
-		),
+		Span::styled("h", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
 		Span::raw(" hash  "),
-		Span::styled(
-			"p",
-			Style::default()
-				.fg(Color::Green)
-				.add_modifier(Modifier::BOLD),
-		),
-		Span::raw(" path"),
+		Span::styled("p", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::raw(" path  "),
+		// Table navigation
+		Span::styled("↑/↓", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::raw(" move  "),
+		Span::styled("PgUp/PgDn", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::raw(" page  "),
+		Span::styled("Home", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::raw(" top  "),
+		Span::styled("End", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::raw(" bottom  "),
+		// Path input mode
+		Span::styled("Enter", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::raw(" confirm  "),
+		Span::styled("Esc", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::raw(" cancel"),
 	]))
 	.style(Style::default().bg(Color::Black).fg(Color::White));
 	frame.render_widget(keybinding_hints, chunks[3]);
@@ -584,34 +666,75 @@ fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
 	area
 }
 
-fn handle_events(in_input: bool, input_buffer: &mut String) -> std::io::Result<Option<Action>> {
-	if event::poll(Duration::from_millis(100))? {
-		if let Event::Key(key) = event::read()? {
-			if in_input {
-				match key.code {
-					KeyCode::Esc => return Ok(Some(Action::CancelPath)),
-					KeyCode::Enter => return Ok(Some(Action::SubmitPath)),
-					KeyCode::Backspace => {
-						input_buffer.pop();
-						return Ok(None);
+fn handle_events(in_input: bool, input_buffer: &mut String) -> std::io::Result<Vec<Action>> {
+	let mut actions = Vec::new();
+	// Wait briefly for at least one event, then drain the rest without waiting
+	if event::poll(Duration::from_millis(10))? {
+		loop {
+			match event::read()? {
+				Event::Key(key) => {
+					if in_input {
+						match key.code {
+							KeyCode::Esc => actions.push(Action::CancelPath),
+							KeyCode::Enter => actions.push(Action::SubmitPath),
+							KeyCode::Backspace => { input_buffer.pop(); }
+							KeyCode::Char(c) => { input_buffer.push(c); }
+							_ => {}
+						}
+					} else {
+						let action = match key.code {
+							KeyCode::Char('q') => Some(Action::Quit),
+							KeyCode::Char('r') => Some(Action::Refresh),
+							KeyCode::Char('s') => Some(Action::Scan),
+							KeyCode::Char('h') => Some(Action::Hash),
+							KeyCode::Char('p') => Some(Action::EnterPathMode),
+							KeyCode::Up => Some(Action::Up),
+							KeyCode::Down => Some(Action::Down),
+							KeyCode::PageUp => Some(Action::PageUp),
+							KeyCode::PageDown => Some(Action::PageDown),
+							KeyCode::Home => Some(Action::Home),
+							KeyCode::End => Some(Action::End),
+							_ => None,
+						};
+						if let Some(a) = action { actions.push(a); }
 					}
-					KeyCode::Char(c) => {
-						input_buffer.push(c);
-						return Ok(None);
-					}
-					_ => {}
 				}
-				return Ok(None);
+				Event::Mouse(me) => {
+					use crossterm::event::MouseEventKind::*;
+					if !in_input {
+						match me.kind {
+							ScrollUp => actions.push(Action::Up),
+							ScrollDown => actions.push(Action::Down),
+							_ => {}
+						}
+					}
+				}
+				Event::Resize(_, _) => {
+					// ignore
+				}
+				_ => {}
 			}
-			return Ok(match key.code {
-				KeyCode::Char('q') => Some(Action::Quit),
-				KeyCode::Char('r') => Some(Action::Refresh),
-				KeyCode::Char('s') => Some(Action::Scan),
-				KeyCode::Char('h') => Some(Action::Hash),
-				KeyCode::Char('p') => Some(Action::EnterPathMode),
-				_ => None,
-			});
+			// drain without blocking
+			if !event::poll(Duration::from_millis(0))? { break; }
 		}
 	}
-	Ok(None)
+	Ok(actions)
+}
+
+/// Format file size in human-readable format
+fn format_file_size(size: u64) -> String {
+	const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+	let mut size_f = size as f64;
+	let mut unit_index = 0;
+
+	while size_f >= 1024.0 && unit_index < UNITS.len() - 1 {
+		size_f /= 1024.0;
+		unit_index += 1;
+	}
+
+	if unit_index == 0 {
+		format!("{} {}", size, UNITS[unit_index])
+	} else {
+		format!("{:.1} {}", size_f, UNITS[unit_index])
+	}
 }

@@ -261,6 +261,54 @@ impl DuplicateDetector {
 			.unwrap_or(0)
 	}
 
+	/// Get file information filtered by path prefix, sorted by size (descending)
+	/// Returns a vector of (path, size, file_type, hashed) tuples
+	pub fn files_under_prefix_sorted_by_size<S: AsRef<str>>(&self, prefix: S) -> Vec<(String, u64, String, bool)> {
+		use polars::prelude::*;
+		let pref = prefix.as_ref();
+
+		let result = self.state
+			.data
+			.clone()
+			.lazy()
+			.filter(col("path").str().starts_with(lit(pref)))
+			.select([
+				col("path"),
+				col("size"),
+				col("file_type"),
+				col("hashed")
+			])
+			.collect();
+
+		match result {
+			Ok(df) => {
+				let mut files = Vec::new();
+				if df.height() > 0 {
+					let paths = df.column("path").unwrap().str().unwrap();
+					let sizes = df.column("size").unwrap().u64().unwrap();
+					let file_types = df.column("file_type").unwrap().str().unwrap();
+					let hashed_flags = df.column("hashed").unwrap().bool().unwrap();
+
+					for (((path_opt, size_opt), file_type_opt), hashed_opt) in paths
+						.into_iter()
+						.zip(sizes.into_iter())
+						.zip(file_types.into_iter())
+						.zip(hashed_flags.into_iter())
+					{
+						if let (Some(path), Some(size), Some(file_type), Some(hashed)) =
+							(path_opt, size_opt, file_type_opt, hashed_opt) {
+							files.push((path.to_string(), size, file_type.to_string(), hashed));
+						}
+					}
+				}
+				// Sort by size in descending order
+				files.sort_by(|a, b| b.1.cmp(&a.1));
+				files
+			}
+			Err(_) => Vec::new(),
+		}
+	}
+
 	/// Clean up stale cache entries by removing deleted files and marking modified files for re-processing
 	pub fn validate_cached_files(&mut self) -> DetectorResult<(usize, usize)> {
 		use polars::prelude::*;

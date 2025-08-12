@@ -1,0 +1,4 @@
+app:
+  name: Test App
+  description: "Lorem ipsum dolor sit amet, consectetur adipiscing elit"
+  version: 1.0.0

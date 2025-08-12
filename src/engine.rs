@@ -243,9 +243,12 @@ impl BackgroundEngine {
 						// Always emit snapshot for UI updates
 						let mut snap = crate::ui::PresentationState::from_detector(&detector);
 						if let Some(ref p) = current_path {
-							let scoped =
-								detector.files_pending_hash_under_prefix(p.to_string_lossy());
+							let path_str = p.to_string_lossy();
+							let scoped = detector.files_pending_hash_under_prefix(&path_str);
 							snap.pending_hash_scoped = Some(scoped);
+							// Update file table with path filter
+							snap.file_table = detector.files_under_prefix_sorted_by_size(&path_str);
+							snap.current_path_filter = path_str.to_string();
 						}
 						let _ = evt_tx.send(EngineEvent::SnapshotReady(snap)).await;
 
@@ -269,9 +272,12 @@ impl BackgroundEngine {
 						// Even when not running, emit snapshots for UI updates
 						let mut snap = crate::ui::PresentationState::from_detector(&detector);
 						if let Some(ref p) = current_path {
-							let scoped =
-								detector.files_pending_hash_under_prefix(p.to_string_lossy());
+							let path_str = p.to_string_lossy();
+							let scoped = detector.files_pending_hash_under_prefix(&path_str);
 							snap.pending_hash_scoped = Some(scoped);
+							// Update file table with path filter
+							snap.file_table = detector.files_under_prefix_sorted_by_size(&path_str);
+							snap.current_path_filter = path_str.to_string();
 						}
 						let _ = evt_tx.send(EngineEvent::SnapshotReady(snap)).await;
 						smol::Timer::after(std::time::Duration::from_millis(500)).await;
