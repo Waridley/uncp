@@ -26,6 +26,10 @@ pub enum EngineEvent {
 	Started,
 	Completed,
 	Error(String),
+	CacheLoading,
+	CacheLoaded,
+	CacheSaving,
+	CacheSaved,
 }
 
 pub struct BackgroundEngine {
@@ -77,8 +81,10 @@ impl BackgroundEngine {
 							}
 							EngineCommand::Stop => break,
 							EngineCommand::LoadCache(dir) => {
+								let _ = evt_tx.send(EngineEvent::CacheLoading).await;
 								if let Ok(true) = detector.load_cache_all(dir) {
 									info!("Engine: loaded cache in background");
+									let _ = evt_tx.send(EngineEvent::CacheLoaded).await;
 									// Emit snapshot after loading cache
 									let mut snap = crate::ui::PresentationState::from_detector(&detector);
 									if let Some(ref p) = current_path {
@@ -86,6 +92,8 @@ impl BackgroundEngine {
 										snap.pending_hash_scoped = Some(scoped);
 									}
 									let _ = evt_tx.send(EngineEvent::SnapshotReady(snap)).await;
+								} else {
+									let _ = evt_tx.send(EngineEvent::CacheLoaded).await; // Still emit loaded even if failed
 								}
 							}
 						}
@@ -187,8 +195,10 @@ impl BackgroundEngine {
 						// Throttled autosave: every ~5s to avoid blocking frequently
 						if last_save.elapsed() >= std::time::Duration::from_secs(5) {
 							if let Some(dir) = default_cache_dir() {
+								let _ = evt_tx.send(EngineEvent::CacheSaving).await;
 								// Save cache synchronously but quickly
 								let _ = detector.save_cache_all(dir);
+								let _ = evt_tx.send(EngineEvent::CacheSaved).await;
 							}
 							last_save = std::time::Instant::now();
 						}

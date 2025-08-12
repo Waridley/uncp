@@ -203,13 +203,33 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 				}
 				EngineEvent::Started => {
 					debug!("TUI: Engine started");
-					engine_status = "Running".to_string();
-					pres = pres.clone().with_status("Engine started");
+					engine_status = "Ready".to_string();
+					pres = pres.clone().with_status("Scan engine ready");
 				}
 				EngineEvent::Completed => {
 					debug!("TUI: Engine completed");
 					engine_status = "Completed".to_string();
-					pres = pres.clone().with_status("Engine completed");
+					pres = pres.clone().with_status("Scan completed");
+				}
+				EngineEvent::CacheLoading => {
+					debug!("TUI: Cache loading");
+					engine_status = "Loading cache".to_string();
+					pres = pres.clone().with_status("Loading cache from disk");
+				}
+				EngineEvent::CacheLoaded => {
+					debug!("TUI: Cache loaded");
+					engine_status = "Ready".to_string();
+					pres = pres.clone().with_status("Cache loaded successfully");
+				}
+				EngineEvent::CacheSaving => {
+					debug!("TUI: Cache saving");
+					engine_status = "Saving cache".to_string();
+					pres = pres.clone().with_status("Saving cache to disk");
+				}
+				EngineEvent::CacheSaved => {
+					debug!("TUI: Cache saved");
+					// Don't change engine_status here, keep current operation status
+					pres = pres.clone().with_status("Cache saved successfully");
 				}
 				EngineEvent::DiscoveryProgress(progress) => {
 					debug!("TUI: Discovery progress: {}/{} - {:?}",
@@ -338,12 +358,12 @@ fn draw_enhanced(
 	// Enhanced footer with detailed status
 	let mut status_lines = Vec::new();
 
-	// Engine status line
-	let mut engine_line = format!("Engine: {}", engine_status);
+	// Scan status line
+	let mut scan_line = format!("Scan status: {}", engine_status);
 	if let Some(speed) = processing_speed {
-		engine_line.push_str(&format!(" ({:.1} files/sec)", speed));
+		scan_line.push_str(&format!(" ({:.1} files/sec)", speed));
 	}
-	status_lines.push(Line::from(Span::raw(engine_line)));
+	status_lines.push(Line::from(Span::raw(scan_line)));
 
 	// Always show discovery status based on current detector state
 	let total_files = pres.total_files;
