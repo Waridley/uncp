@@ -81,8 +81,19 @@ impl BackgroundEngine {
 					if running {
 						// Small step: run discovery and hashing for current path then yield
 						if let Some(p) = current_path.clone() {
-							let _ = detector.scan_directory(p.clone()).await;
-							let _ = detector.scan_and_hash(p.clone()).await;
+							// Set up progress callbacks to emit engine events
+							let evt_tx_discovery = evt_tx.clone();
+							let discovery_progress = std::sync::Arc::new(move |progress: SystemProgress| {
+								let _ = evt_tx_discovery.try_send(EngineEvent::DiscoveryProgress(progress));
+							});
+
+							let evt_tx_hashing = evt_tx.clone();
+							let hashing_progress = std::sync::Arc::new(move |progress: SystemProgress| {
+								let _ = evt_tx_hashing.try_send(EngineEvent::HashingProgress(progress));
+							});
+
+							let _ = detector.scan_with_progress(p.clone(), discovery_progress).await;
+							let _ = detector.process_until_complete_with_progress(Some(p.clone()), hashing_progress).await;
 						}
 						// Emit snapshot for UI/CLI refresh, with scoped pending if path set
 						let mut snap = crate::ui::PresentationState::from_detector(&detector);

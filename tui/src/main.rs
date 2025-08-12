@@ -103,8 +103,15 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 	let _ = cmds.try_send(EngineCommand::Start);
 
 	let mut input_buffer = String::new();
-
 	let mut progress_line: Option<String> = None;
+
+	// Enhanced status tracking
+	let mut current_discovery_progress: Option<uncp::systems::SystemProgress> = None;
+	let mut current_hashing_progress: Option<uncp::systems::SystemProgress> = None;
+	let mut engine_status = "Starting...".to_string();
+	let mut processing_speed: Option<f64> = None; // files per second
+	let mut last_progress_update = std::time::Instant::now();
+	let mut last_processed_count = 0;
 
 	// Engine handles all background work; TUI just sends commands and receives snapshots
 	// Initialize presentation state empty; engine snapshots will update it
@@ -188,14 +195,55 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 				}
 				EngineEvent::Started => {
 					debug!("TUI: Engine started");
+					engine_status = "Running".to_string();
 					pres = pres.clone().with_status("Engine started");
 				}
 				EngineEvent::Completed => {
 					debug!("TUI: Engine completed");
+					engine_status = "Completed".to_string();
 					pres = pres.clone().with_status("Engine completed");
 				}
-				_ => {
-					debug!("TUI: Received other engine event: {:?}", evt);
+				EngineEvent::DiscoveryProgress(progress) => {
+					debug!("TUI: Discovery progress: {}/{} - {:?}",
+						progress.processed_items, progress.total_items, progress.current_item);
+
+					// Calculate processing speed
+					let now = std::time::Instant::now();
+					if now.duration_since(last_progress_update).as_secs() >= 1 {
+						let items_processed = progress.processed_items.saturating_sub(last_processed_count);
+						let elapsed = now.duration_since(last_progress_update).as_secs_f64();
+						if elapsed > 0.0 {
+							processing_speed = Some(items_processed as f64 / elapsed);
+						}
+						last_progress_update = now;
+						last_processed_count = progress.processed_items;
+					}
+
+					current_discovery_progress = Some(progress);
+					engine_status = "Discovering files".to_string();
+				}
+				EngineEvent::HashingProgress(progress) => {
+					debug!("TUI: Hashing progress: {}/{} - {:?}",
+						progress.processed_items, progress.total_items, progress.current_item);
+
+					// Calculate processing speed for hashing
+					let now = std::time::Instant::now();
+					if now.duration_since(last_progress_update).as_secs() >= 1 {
+						let items_processed = progress.processed_items.saturating_sub(last_processed_count);
+						let elapsed = now.duration_since(last_progress_update).as_secs_f64();
+						if elapsed > 0.0 {
+							processing_speed = Some(items_processed as f64 / elapsed);
+						}
+						last_progress_update = now;
+						last_processed_count = progress.processed_items;
+					}
+
+					current_hashing_progress = Some(progress);
+					engine_status = "Hashing files".to_string();
+				}
+				EngineEvent::Error(err) => {
+					debug!("TUI: Engine error: {}", err);
+					engine_status = format!("Error: {}", err);
 				}
 			}
 		}
@@ -212,12 +260,16 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 			None
 		};
 		terminal.draw(|f| {
-			draw(
+			draw_enhanced(
 				f,
 				&pres,
 				in_path_input,
 				&input_buffer,
 				progress_display.as_deref(),
+				&engine_status,
+				&current_discovery_progress,
+				&current_hashing_progress,
+				processing_speed,
 			)
 		})?;
 	}
@@ -234,19 +286,23 @@ enum Action {
 	SubmitPath,
 }
 
-fn draw(
+fn draw_enhanced(
 	frame: &mut Frame,
 	pres: &PresentationState,
 	in_input: bool,
 	input: &str,
 	progress: Option<&str>,
+	engine_status: &str,
+	discovery_progress: &Option<uncp::systems::SystemProgress>,
+	hashing_progress: &Option<uncp::systems::SystemProgress>,
+	processing_speed: Option<f64>,
 ) {
 	let chunks = Layout::default()
 		.direction(Direction::Vertical)
 		.constraints([
 			Constraint::Length(4), // header
 			Constraint::Min(5),    // body
-			Constraint::Length(2), // footer
+			Constraint::Length(5), // enhanced footer
 		])
 		.split(frame.area());
 
@@ -271,24 +327,80 @@ fn draw(
 	let list = List::new(items).block(Block::default().borders(Borders::ALL).title("By Type"));
 	frame.render_widget(list, chunks[1]);
 
-	// Footer / status with input/progress
-	let mut status = pres.status.clone();
+	// Enhanced footer with detailed status
+	let mut status_lines = Vec::new();
+
+	// Engine status line
+	let mut engine_line = format!("Engine: {}", engine_status);
+	if let Some(speed) = processing_speed {
+		engine_line.push_str(&format!(" ({:.1} files/sec)", speed));
+	}
+	status_lines.push(Line::from(Span::raw(engine_line)));
+
+	// Discovery progress line
+	if let Some(ref disc) = discovery_progress {
+		let percentage = if disc.total_items > 0 {
+			(disc.processed_items as f64 / disc.total_items as f64 * 100.0) as u32
+		} else {
+			0
+		};
+		let mut disc_line = format!("Discovery: {}/{} ({}%)",
+			disc.processed_items, disc.total_items, percentage);
+		if let Some(ref current) = disc.current_item {
+			// Truncate long paths for display
+			let display_path = if current.len() > 50 {
+				format!("...{}", &current[current.len()-47..])
+			} else {
+				current.clone()
+			};
+			disc_line.push_str(&format!(" - {}", display_path));
+		}
+		status_lines.push(Line::from(Span::raw(disc_line)));
+	}
+
+	// Hashing progress line
+	if let Some(ref hash) = hashing_progress {
+		let percentage = if hash.total_items > 0 {
+			(hash.processed_items as f64 / hash.total_items as f64 * 100.0) as u32
+		} else {
+			0
+		};
+		let mut hash_line = format!("Hashing: {}/{} ({}%)",
+			hash.processed_items, hash.total_items, percentage);
+		if let Some(ref current) = hash.current_item {
+			// Truncate long paths for display
+			let display_path = if current.len() > 50 {
+				format!("...{}", &current[current.len()-47..])
+			} else {
+				current.clone()
+			};
+			hash_line.push_str(&format!(" - {}", display_path));
+		}
+		status_lines.push(Line::from(Span::raw(hash_line)));
+	}
+
+	// Legacy status and input
+	let mut legacy_status = pres.status.clone();
 	if let Some(p) = progress {
-		status = if status.is_empty() {
+		legacy_status = if legacy_status.is_empty() {
 			p.to_string()
 		} else {
-			format!("{} | {}", status, p)
+			format!("{} | {}", legacy_status, p)
 		};
 	}
 	if in_input {
-		status = if status.is_empty() {
+		legacy_status = if legacy_status.is_empty() {
 			format!("Path: {}", input)
 		} else {
-			format!("{} | Path: {}", status, input)
+			format!("{} | Path: {}", legacy_status, input)
 		};
 	}
-	let footer =
-		Paragraph::new(status).block(Block::default().borders(Borders::ALL).title("Status"));
+	if !legacy_status.is_empty() {
+		status_lines.push(Line::from(Span::raw(legacy_status)));
+	}
+
+	let footer = Paragraph::new(status_lines)
+		.block(Block::default().borders(Borders::ALL).title("Status"));
 	frame.render_widget(footer, chunks[2]);
 }
 
