@@ -8,9 +8,9 @@ pub mod data;
 pub mod detector;
 pub mod error;
 pub mod memory;
+pub mod paths;
 pub mod query;
 pub mod similarity;
-pub mod paths;
 
 pub mod ui;
 

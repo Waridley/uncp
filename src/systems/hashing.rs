@@ -12,15 +12,25 @@ use tracing::{info, trace, warn};
 
 #[derive(Default)]
 pub struct ContentHashSystem {
-    pub scope_prefix: Option<String>,
-    pub callback: ProgressCb,
+	pub scope_prefix: Option<String>,
+	pub callback: ProgressCb,
 }
 impl ContentHashSystem {
-    pub fn new() -> Self { Self::default() }
-    pub fn with_scope_prefix<S: Into<String>>(mut self, prefix: S) -> Self { self.scope_prefix = Some(prefix.into()); self }
-    pub fn with_progress_callback(mut self, cb: std::sync::Arc<dyn Fn(SystemProgress) + Send + Sync>) -> Self { self.callback = Some(cb); self }
+	pub fn new() -> Self {
+		Self::default()
+	}
+	pub fn with_scope_prefix<S: Into<String>>(mut self, prefix: S) -> Self {
+		self.scope_prefix = Some(prefix.into());
+		self
+	}
+	pub fn with_progress_callback(
+		mut self,
+		cb: std::sync::Arc<dyn Fn(SystemProgress) + Send + Sync>,
+	) -> Self {
+		self.callback = Some(cb);
+		self
+	}
 }
-
 
 pub type ProgressCb = Option<std::sync::Arc<dyn Fn(SystemProgress) + Send + Sync>>;
 
@@ -40,20 +50,21 @@ impl SystemRunner for ContentHashSystem {
 			})?;
 		info!("Hashing: {} files pending", to_hash_df.height());
 
-			// Apply scope filter if configured
-			let to_hash_df = if let Some(ref pref) = self.scope_prefix {
-				to_hash_df
-					.lazy()
-					.filter(col("path").str().starts_with(lit(pref.as_str())))
-					.collect()
-					.map_err(|e| SystemError::ExecutionFailed { system: self.name().into(), reason: e.to_string() })?
-			} else {
-				to_hash_df
-			};
+		// Apply scope filter if configured
+		let to_hash_df = if let Some(ref pref) = self.scope_prefix {
+			to_hash_df
+				.lazy()
+				.filter(col("path").str().starts_with(lit(pref.as_str())))
+				.collect()
+				.map_err(|e| SystemError::ExecutionFailed {
+					system: self.name().into(),
+					reason: e.to_string(),
+				})?
+		} else {
+			to_hash_df
+		};
 
-
-
-			let t_start = std::time::Instant::now();
+		let t_start = std::time::Instant::now();
 
 		if to_hash_df.height() == 0 {
 			return Ok(());
@@ -134,26 +145,25 @@ impl SystemRunner for ContentHashSystem {
 				reason: e.to_string(),
 			})?;
 
-			let dur = t_start.elapsed();
-			info!("Hashing: committed updates in {:?}", dur);
+		let dur = t_start.elapsed();
+		info!("Hashing: committed updates in {:?}", dur);
 
-
-/* cleanup placeholder: removed old WithProgress and Scoped implementations */
+		/* cleanup placeholder: removed old WithProgress and Scoped implementations */
 
 		state.data = updated;
 		Ok(())
+	}
 
-        }
-
-        fn can_run(&self, _state: &ScanState) -> bool { true }
-        fn priority(&self) -> u8 { 200 }
-        fn name(&self) -> &'static str { "ContentHash" }
-    }
-
-
-
-
-
+	fn can_run(&self, _state: &ScanState) -> bool {
+		true
+	}
+	fn priority(&self) -> u8 {
+		200
+	}
+	fn name(&self) -> &'static str {
+		"ContentHash"
+	}
+}
 
 impl System for ContentHashSystem {
 	fn required_columns(&self) -> &[&'static str] {

@@ -56,7 +56,8 @@ impl DuplicateDetector {
 		info!("Detector: scan_directory {}", path.display());
 		let discovery = FileDiscoverySystem::new(vec![path]);
 		self.scheduler.add_system(discovery);
-		let res = self.scheduler
+		let res = self
+			.scheduler
 			.run_all(&mut self.state, &mut self.memory_mgr)
 			.await
 			.map_err(DetectorError::from);
@@ -73,7 +74,10 @@ impl DuplicateDetector {
 		path: PathBuf,
 		progress: std::sync::Arc<dyn Fn(crate::systems::SystemProgress) + Send + Sync>,
 	) -> DetectorResult<()> {
-		info!("Detector: scan_directory {} (with progress)", path.display());
+		info!(
+			"Detector: scan_directory {} (with progress)",
+			path.display()
+		);
 		let discovery = FileDiscoverySystem::new(vec![path]).with_progress_callback(progress);
 		self.scheduler.add_system(discovery);
 		let res = self
@@ -95,8 +99,10 @@ impl DuplicateDetector {
 		let discovery = FileDiscoverySystem::new(vec![path.clone()]);
 		self.scheduler.add_system(discovery);
 		// Then hashing (scoped to requested path)
-		self.scheduler.add_system(ContentHashSystem::new().with_scope_prefix(path.to_string_lossy()));
-		let res = self.scheduler
+		self.scheduler
+			.add_system(ContentHashSystem::new().with_scope_prefix(path.to_string_lossy()));
+		let res = self
+			.scheduler
 			.run_all(&mut self.state, &mut self.memory_mgr)
 			.await
 			.map_err(DetectorError::from);
@@ -113,7 +119,8 @@ impl DuplicateDetector {
 		progress: std::sync::Arc<dyn Fn(SystemProgress) + Send + Sync>,
 	) -> DetectorResult<()> {
 		if let Some(p) = path.clone() {
-			let discovery = FileDiscoverySystem::new(vec![p.clone()]).with_progress_callback(progress.clone());
+			let discovery =
+				FileDiscoverySystem::new(vec![p.clone()]).with_progress_callback(progress.clone());
 			self.scheduler.add_system(discovery);
 		}
 		self.scheduler.add_system(ContentHashSystem::new());
@@ -130,9 +137,9 @@ impl DuplicateDetector {
 		res
 	}
 
-
 	pub async fn process_until_complete(&mut self) -> DetectorResult<()> {
-		let res = self.scheduler
+		let res = self
+			.scheduler
 			.run_all(&mut self.state, &mut self.memory_mgr)
 			.await
 			.map_err(DetectorError::from);
@@ -168,8 +175,7 @@ impl DuplicateDetector {
 		self.state.data.height()
 	}
 	pub fn files_pending_hash(&self) -> usize {
-		self
-			.state
+		self.state
 			.data
 			.column("hashed")
 			.ok()
@@ -181,8 +187,7 @@ impl DuplicateDetector {
 	pub fn files_pending_hash_under_prefix<S: AsRef<str>>(&self, prefix: S) -> usize {
 		use polars::prelude::*;
 		let pref = prefix.as_ref();
-		self
-			.state
+		self.state
 			.data
 			.clone()
 			.lazy()

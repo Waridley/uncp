@@ -14,8 +14,8 @@ use crate::systems::{yield_periodically, System, SystemContext, SystemProgress, 
 /// System for discovering files in the filesystem
 
 pub struct FileDiscoverySystem {
-		/// Optional progress callback (shared for TUI/GUI)
-		pub progress_callback: Option<std::sync::Arc<dyn Fn(SystemProgress) + Send + Sync>> ,
+	/// Optional progress callback (shared for TUI/GUI)
+	pub progress_callback: Option<std::sync::Arc<dyn Fn(SystemProgress) + Send + Sync>>,
 	/// Paths to scan
 	pub scan_paths: Vec<PathBuf>,
 	/// Whether to follow symbolic links

@@ -76,9 +76,18 @@ impl CacheManager {
 
 		// Save state DataFrame and relations atomically
 		atomic_write_parquet(self.state_path(), state.clone().data.clone())?;
-		atomic_write_parquet(self.rel_hashes_path(), relations.clone().hash_relations.clone())?;
-		atomic_write_parquet(self.rel_groups_path(), relations.clone().similarity_groups.clone())?;
-		atomic_write_parquet(self.rel_pairs_path(), relations.clone().pairwise_relations.clone())?;
+		atomic_write_parquet(
+			self.rel_hashes_path(),
+			relations.clone().hash_relations.clone(),
+		)?;
+		atomic_write_parquet(
+			self.rel_groups_path(),
+			relations.clone().similarity_groups.clone(),
+		)?;
+		atomic_write_parquet(
+			self.rel_pairs_path(),
+			relations.clone().pairwise_relations.clone(),
+		)?;
 
 		// Save metadata JSON last
 		let meta = ScanMetadata {

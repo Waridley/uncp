@@ -31,11 +31,16 @@ use uncp::engine::{BackgroundEngine, EngineCommand, EngineEvent};
 use std::fs;
 use uncp::{DetectorConfig, DuplicateDetector};
 
-
 fn default_cache_dir() -> Option<PathBuf> {
-	cache_dir().map(|mut p| { p.push("uncp"); p })
+	cache_dir().map(|mut p| {
+		p.push("uncp");
+		p
+	})
 }
-fn ensure_dir(dir: &PathBuf) -> anyhow::Result<()> { fs::create_dir_all(dir)?; Ok(()) }
+fn ensure_dir(dir: &PathBuf) -> anyhow::Result<()> {
+	fs::create_dir_all(dir)?;
+	Ok(())
+}
 
 fn main() {
 	let opts = Opts::parse();
@@ -53,7 +58,9 @@ async fn run(opts: Opts) -> anyhow::Result<()> {
 		Command::Scan { path, hash } => {
 			let mut detector = DuplicateDetector::new(DetectorConfig::default())?;
 			let cache_path = default_cache_dir();
-			if let Some(dir) = &cache_path { ensure_dir(dir)?; }
+			if let Some(dir) = &cache_path {
+				ensure_dir(dir)?;
+			}
 			if let Some(dir) = &cache_path {
 				if detector.load_cache_all(dir.clone())? {
 					tracing::info!("Loaded cache from {}", dir.display());
@@ -70,7 +77,10 @@ async fn run(opts: Opts) -> anyhow::Result<()> {
 				match evt {
 					EngineEvent::SnapshotReady(snap) => {
 						// Print a compact progress line to stderr (respects global tracing level)
-						eprintln!("progress: total={} pending_hash={}", snap.total_files, snap.pending_hash);
+						eprintln!(
+							"progress: total={} pending_hash={}",
+							snap.total_files, snap.pending_hash
+						);
 						// Exit early if this requested directory is fully processed
 						if snap.pending_hash_under_prefix(&pref) == 0 {
 							break;
@@ -90,19 +100,19 @@ async fn run(opts: Opts) -> anyhow::Result<()> {
 			}
 		}
 
-	Command::ClearCache => {
-				if let Some(dir) = default_cache_dir() {
-					if dir.exists() {
-						tracing::warn!("Deleting cache at {}", dir.display());
-						fs::remove_dir_all(&dir)?;
-						println!("Deleted cache: {}", dir.display());
-					} else {
-						println!("Cache not found: {}", dir.display());
-					}
+		Command::ClearCache => {
+			if let Some(dir) = default_cache_dir() {
+				if dir.exists() {
+					tracing::warn!("Deleting cache at {}", dir.display());
+					fs::remove_dir_all(&dir)?;
+					println!("Deleted cache: {}", dir.display());
 				} else {
-					println!("No cache directory for this platform");
+					println!("Cache not found: {}", dir.display());
 				}
+			} else {
+				println!("No cache directory for this platform");
 			}
+		}
 	}
 	Ok(())
 }
