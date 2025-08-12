@@ -345,14 +345,20 @@ fn draw_enhanced(
 	}
 	status_lines.push(Line::from(Span::raw(engine_line)));
 
-	// Discovery progress line
-	if let Some(ref disc) = discovery_progress {
+	// Always show discovery status based on current detector state
+	let total_files = pres.total_files;
+	let pending_files = pres.pending_hash;
+	let discovered_files = total_files;
+
+	// Discovery line - show current state
+	let mut disc_line = if let Some(ref disc) = discovery_progress {
+		// Use progress event data if available
 		let percentage = if disc.total_items > 0 {
 			(disc.processed_items as f64 / disc.total_items as f64 * 100.0) as u32
 		} else {
 			0
 		};
-		let mut disc_line = format!("Discovery: {}/{} ({}%)",
+		let mut line = format!("Discovery: {}/{} ({}%)",
 			disc.processed_items, disc.total_items, percentage);
 		if let Some(ref current) = disc.current_item {
 			// Truncate long paths for display
@@ -361,19 +367,29 @@ fn draw_enhanced(
 			} else {
 				current.clone()
 			};
-			disc_line.push_str(&format!(" - {}", display_path));
+			line.push_str(&format!(" - {}", display_path));
 		}
-		status_lines.push(Line::from(Span::raw(disc_line)));
-	}
+		line
+	} else {
+		// Show current detector state when no progress events
+		if discovered_files == 0 {
+			"Discovery: 0/0 (0%) - No files discovered yet".to_string()
+		} else {
+			format!("Discovery: {}/{} (100%) - {} files discovered",
+				discovered_files, discovered_files, discovered_files)
+		}
+	};
+	status_lines.push(Line::from(Span::raw(disc_line)));
 
-	// Hashing progress line
-	if let Some(ref hash) = hashing_progress {
+	// Always show hashing status based on current detector state
+	let mut hash_line = if let Some(ref hash) = hashing_progress {
+		// Use progress event data if available
 		let percentage = if hash.total_items > 0 {
 			(hash.processed_items as f64 / hash.total_items as f64 * 100.0) as u32
 		} else {
 			0
 		};
-		let mut hash_line = format!("Hashing: {}/{} ({}%)",
+		let mut line = format!("Hashing: {}/{} ({}%)",
 			hash.processed_items, hash.total_items, percentage);
 		if let Some(ref current) = hash.current_item {
 			// Truncate long paths for display
@@ -382,10 +398,28 @@ fn draw_enhanced(
 			} else {
 				current.clone()
 			};
-			hash_line.push_str(&format!(" - {}", display_path));
+			line.push_str(&format!(" - {}", display_path));
 		}
-		status_lines.push(Line::from(Span::raw(hash_line)));
-	}
+		line
+	} else {
+		// Show current detector state when no progress events
+		if total_files == 0 {
+			"Hashing: 0/0 (0%) - No files to hash".to_string()
+		} else if pending_files == 0 {
+			format!("Hashing: {}/{} (100%) - All files hashed",
+				total_files, total_files)
+		} else {
+			let hashed_files = total_files - pending_files;
+			let percentage = if total_files > 0 {
+				(hashed_files as f64 / total_files as f64 * 100.0) as u32
+			} else {
+				0
+			};
+			format!("Hashing: {}/{} ({}%) - {} files pending",
+				hashed_files, total_files, percentage, pending_files)
+		}
+	};
+	status_lines.push(Line::from(Span::raw(hash_line)));
 
 	// Legacy status and input
 	let mut legacy_status = pres.status.clone();
