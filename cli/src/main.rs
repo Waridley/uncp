@@ -1,88 +1,155 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use tracing::{subscriber::set_global_default, Level};
 use tracing_subscriber::EnvFilter;
-use tracing::{Level, subscriber::set_global_default};
 fn init_tracing(verbosity: u8) {
-    // Map -q/-v to tracing levels; default INFO
-    let level = match verbosity {
-        0 => Level::WARN,
-        1 => Level::INFO,
-        2 => Level::DEBUG,
-        _ => Level::TRACE,
-    };
+	// Map -q/-v to tracing levels; default INFO
+	let level = match verbosity {
+		0 => Level::WARN,
+		1 => Level::INFO,
+		2 => Level::DEBUG,
+		_ => Level::TRACE,
+	};
 
-    let env_filter = EnvFilter::from_default_env()
-        .add_directive(level.into());
+	let env_filter = EnvFilter::from_default_env().add_directive(level.into());
 
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .with_writer(std::io::stderr) // logs to stderr
-        .with_target(false)
-        .with_level(true)
-        .compact()
-        .finish();
+	let subscriber = tracing_subscriber::fmt()
+		.with_env_filter(env_filter)
+		.with_writer(std::io::stderr) // logs to stderr
+		.with_target(false)
+		.with_level(true)
+		.compact()
+		.finish();
 
-    // Ignore error if already set in tests or env
-    let _ = set_global_default(subscriber);
+	// Ignore error if already set in tests or env
+	let _ = set_global_default(subscriber);
 }
 
-use uncp::{DuplicateDetector, DetectorConfig};
+use dirs::cache_dir;
+use uncp::engine::{BackgroundEngine, EngineCommand, EngineEvent};
+
+use std::fs;
+use uncp::{DetectorConfig, DuplicateDetector};
+
+fn default_cache_dir() -> Option<PathBuf> {
+	cache_dir().map(|mut p| {
+		p.push("uncp");
+		p
+	})
+}
+fn ensure_dir(dir: &PathBuf) -> anyhow::Result<()> {
+	fs::create_dir_all(dir)?;
+	Ok(())
+}
 
 fn main() {
-    let opts = Opts::parse();
-    init_tracing(opts.verbose.saturating_sub(opts.quiet));
-    smol::block_on(async move {
-        if let Err(e) = run(opts).await {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        }
-    });
+	let opts = Opts::parse();
+	init_tracing(opts.verbose.saturating_sub(opts.quiet));
+	smol::block_on(async move {
+		if let Err(e) = run(opts).await {
+			eprintln!("error: {e}");
+			std::process::exit(1);
+		}
+	});
 }
 
 async fn run(opts: Opts) -> anyhow::Result<()> {
-    match opts.command {
-        Command::Scan { path, hash } => {
-            let mut detector = DuplicateDetector::new(DetectorConfig::default())?;
-            if hash {
-                detector.scan_and_hash(path).await?;
-            } else {
-                detector.scan_directory(path).await?;
-            }
-            print_summary(&detector);
-        }
-    }
-    Ok(())
+	match opts.command {
+		Command::Scan { path, hash } => {
+			let mut detector = DuplicateDetector::new(DetectorConfig::default())?;
+			let cache_path = default_cache_dir();
+			if let Some(dir) = &cache_path {
+				ensure_dir(dir)?;
+			}
+			if let Some(dir) = &cache_path {
+				if detector.load_cache_all(dir.clone())? {
+					tracing::info!("Loaded cache from {}", dir.display());
+				}
+			}
+
+			// Foreground CLI: run engine for parallel speedup, print progress to stderr, exit on completion
+			let (engine, mut events, cmds) = BackgroundEngine::start(detector);
+			let _ = cmds.send(EngineCommand::SetPath(path.clone())).await;
+			let _ = cmds.send(EngineCommand::Start).await;
+			use futures_lite::StreamExt;
+			let pref = path.to_string_lossy().to_string();
+			while let Ok(evt) = events.recv().await {
+				match evt {
+					EngineEvent::SnapshotReady(snap) => {
+						// Print a compact progress line to stderr (respects global tracing level)
+						eprintln!(
+							"progress: total={} pending_hash={}",
+							snap.total_files, snap.pending_hash
+						);
+						// Exit early if this requested directory is fully processed
+						if snap.pending_hash_under_prefix(&pref) == 0 {
+							break;
+						}
+					}
+					EngineEvent::Completed => break,
+					_ => {}
+				}
+			}
+
+			// Save final state to cache and print summary
+			if let Some(dir) = default_cache_dir() {
+				// Re-load so we have a detector for printing
+				let mut det = DuplicateDetector::new(DetectorConfig::default())?;
+				if det.load_cache_all(dir.clone())? {}
+				print_summary(&det);
+			}
+		}
+
+		Command::ClearCache => {
+			if let Some(dir) = default_cache_dir() {
+				if dir.exists() {
+					tracing::warn!("Deleting cache at {}", dir.display());
+					fs::remove_dir_all(&dir)?;
+					println!("Deleted cache: {}", dir.display());
+				} else {
+					println!("Cache not found: {}", dir.display());
+				}
+			} else {
+				println!("No cache directory for this platform");
+			}
+		}
+	}
+	Ok(())
 }
 
 fn print_summary(detector: &DuplicateDetector) {
-    println!("Total files: {}", detector.total_files());
-    println!("Pending hash: {}", detector.files_pending_hash());
-    println!("By type:");
-    for (k, v) in detector.files_by_type_counts() { println!("  {k}: {v}"); }
+	println!("Total files: {}", detector.total_files());
+	println!("Pending hash: {}", detector.files_pending_hash());
+	println!("By type:");
+	for (k, v) in detector.files_by_type_counts() {
+		println!("  {k}: {v}");
+	}
 }
 
 #[derive(Parser)]
 #[command(version, about = "uncp CLI (proof-of-concept)")]
 pub struct Opts {
-    /// Increase verbosity (-v, -vv). Default INFO.
-    #[arg(short = 'v', action = clap::ArgAction::Count)]
-    pub verbose: u8,
-    /// Decrease verbosity (-q). Each -q reduces level by one step.
-    #[arg(short = 'q', action = clap::ArgAction::Count)]
-    pub quiet: u8,
+	/// Increase verbosity (-v, -vv). Default INFO.
+	#[arg(short = 'v', action = clap::ArgAction::Count)]
+	pub verbose: u8,
+	/// Decrease verbosity (-q). Each -q reduces level by one step.
+	#[arg(short = 'q', action = clap::ArgAction::Count)]
+	pub quiet: u8,
 
-    #[command(subcommand)]
-    pub command: Command,
+	#[command(subcommand)]
+	pub command: Command,
 }
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Scan a path; optionally hash contents
-    Scan {
-        /// Path to scan
-        path: PathBuf,
-        /// Also run hashing
-        #[arg(long)]
-        hash: bool,
-    },
+	/// Scan a path; optionally hash contents
+	Scan {
+		/// Path to scan
+		path: PathBuf,
+		/// Also run hashing
+		#[arg(long)]
+		hash: bool,
+	},
+	/// Delete the local cache directory
+	ClearCache,
 }

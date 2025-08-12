@@ -11,3 +11,5 @@ anyhow.workspace = true
 smol.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "5"
+futures-lite = "2"
