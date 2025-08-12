@@ -31,6 +31,12 @@ use uncp::engine::{BackgroundEngine, EngineCommand, EngineEvent};
 use std::fs;
 use uncp::{DetectorConfig, DuplicateDetector};
 
+
+fn default_cache_dir() -> Option<PathBuf> {
+	cache_dir().map(|mut p| { p.push("uncp"); p })
+}
+fn ensure_dir(dir: &PathBuf) -> anyhow::Result<()> { fs::create_dir_all(dir)?; Ok(()) }
+
 fn main() {
 	let opts = Opts::parse();
 	init_tracing(opts.verbose.saturating_sub(opts.quiet));
@@ -53,11 +59,6 @@ async fn run(opts: Opts) -> anyhow::Result<()> {
 					tracing::info!("Loaded cache from {}", dir.display());
 				}
 			}
-
-			fn default_cache_dir() -> Option<PathBuf> {
-				cache_dir().map(|mut p| { p.push("uncp"); p })
-			}
-			fn ensure_dir(dir: &PathBuf) -> anyhow::Result<()> { fs::create_dir_all(dir)?; Ok(()) }
 
 			// Foreground CLI: run engine for parallel speedup, print progress to stderr, exit on completion
 			let (engine, mut events, cmds) = BackgroundEngine::start(detector);
@@ -87,8 +88,21 @@ async fn run(opts: Opts) -> anyhow::Result<()> {
 				if det.load_cache_all(dir.clone())? {}
 				print_summary(&det);
 			}
-
 		}
+
+	Command::ClearCache => {
+				if let Some(dir) = default_cache_dir() {
+					if dir.exists() {
+						tracing::warn!("Deleting cache at {}", dir.display());
+						fs::remove_dir_all(&dir)?;
+						println!("Deleted cache: {}", dir.display());
+					} else {
+						println!("Cache not found: {}", dir.display());
+					}
+				} else {
+					println!("No cache directory for this platform");
+				}
+			}
 	}
 	Ok(())
 }
@@ -126,4 +140,6 @@ pub enum Command {
 		#[arg(long)]
 		hash: bool,
 	},
+	/// Delete the local cache directory
+	ClearCache,
 }

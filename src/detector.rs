@@ -10,7 +10,7 @@ use crate::query::Query;
 
 use crate::paths::default_cache_dir;
 
-use crate::systems::{ContentHashSystem, ContentHashSystemScoped, FileDiscoverySystem, SystemProgress, SystemScheduler};
+use crate::systems::{ContentHashSystem, FileDiscoverySystem, SystemProgress, SystemScheduler};
 use tracing::info;
 
 #[derive(Debug)]
@@ -95,7 +95,7 @@ impl DuplicateDetector {
 		let discovery = FileDiscoverySystem::new(vec![path.clone()]);
 		self.scheduler.add_system(discovery);
 		// Then hashing (scoped to requested path)
-		self.scheduler.add_system(ContentHashSystemScoped::new(path));
+		self.scheduler.add_system(ContentHashSystem::new().with_scope_prefix(path.to_string_lossy()));
 		let res = self.scheduler
 			.run_all(&mut self.state, &mut self.memory_mgr)
 			.await
@@ -116,7 +116,7 @@ impl DuplicateDetector {
 			let discovery = FileDiscoverySystem::new(vec![p.clone()]).with_progress_callback(progress.clone());
 			self.scheduler.add_system(discovery);
 		}
-		self.scheduler.add_system(ContentHashSystem);
+		self.scheduler.add_system(ContentHashSystem::new());
 		let res = self
 			.scheduler
 			.run_all(&mut self.state, &mut self.memory_mgr)
