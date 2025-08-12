@@ -94,6 +94,7 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 	let mut spinner_idx: usize = 0;
 
 	// Start background engine and subscribe to events
+	// Note: Cache loading happens in DuplicateDetector::new() but it's fast enough for TUI startup
 	let (_engine, events, cmds) = BackgroundEngine::start(
 		uncp::DuplicateDetector::new(uncp::DetectorConfig::default()).expect("init detector"),
 	);

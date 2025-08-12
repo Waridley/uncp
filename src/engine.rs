@@ -96,6 +96,16 @@ impl BackgroundEngine {
 
 						if needs_discovery {
 							if let Some(p) = current_path.clone() {
+								// Emit initial discovery progress
+								let initial_progress = crate::systems::SystemProgress {
+									system_name: "Discovery".to_string(),
+									processed_items: 0,
+									total_items: 0,
+									current_item: Some(format!("Starting discovery in {}", p.display())),
+									estimated_remaining: None,
+								};
+								let _ = evt_tx.send(EngineEvent::DiscoveryProgress(initial_progress)).await;
+
 								// Set up progress callback for discovery
 								let evt_tx_discovery = evt_tx.clone();
 								let discovery_progress = std::sync::Arc::new(move |progress: SystemProgress| {
@@ -104,8 +114,28 @@ impl BackgroundEngine {
 
 								// Run discovery for this path (this will complete the discovery)
 								let _ = detector.scan_with_progress(p.clone(), discovery_progress).await;
+
+								// Emit final discovery progress
+								let final_progress = crate::systems::SystemProgress {
+									system_name: "Discovery".to_string(),
+									processed_items: detector.total_files(),
+									total_items: detector.total_files(),
+									current_item: Some("Discovery completed".to_string()),
+									estimated_remaining: None,
+								};
+								let _ = evt_tx.send(EngineEvent::DiscoveryProgress(final_progress)).await;
 							}
 						} else if needs_hashing {
+							// Emit initial hashing progress
+							let initial_progress = crate::systems::SystemProgress {
+								system_name: "Hashing".to_string(),
+								processed_items: detector.total_files() - pending_hash_count,
+								total_items: detector.total_files(),
+								current_item: Some("Starting hashing...".to_string()),
+								estimated_remaining: None,
+							};
+							let _ = evt_tx.send(EngineEvent::HashingProgress(initial_progress)).await;
+
 							// Set up progress callback for hashing
 							let evt_tx_hashing = evt_tx.clone();
 							let hashing_progress = std::sync::Arc::new(move |progress: SystemProgress| {
@@ -114,6 +144,16 @@ impl BackgroundEngine {
 
 							// Process hashing work
 							let _ = detector.process_until_complete_with_progress(None, hashing_progress).await;
+
+							// Emit final hashing progress
+							let final_progress = crate::systems::SystemProgress {
+								system_name: "Hashing".to_string(),
+								processed_items: detector.total_files(),
+								total_items: detector.total_files(),
+								current_item: Some("Hashing completed".to_string()),
+								estimated_remaining: None,
+							};
+							let _ = evt_tx.send(EngineEvent::HashingProgress(final_progress)).await;
 						} else {
 							// No work to do, emit completion event and pause
 							let _ = evt_tx.send(EngineEvent::Completed).await;
