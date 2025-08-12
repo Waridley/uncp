@@ -14,6 +14,8 @@ pub mod paths;
 
 pub mod ui;
 
+pub mod engine;
+
 pub mod systems;
 
 // Re-export main API types

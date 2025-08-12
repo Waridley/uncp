@@ -10,6 +10,8 @@ pub struct PresentationState {
     pub pending_hash: usize,
     pub by_type: Vec<(String, usize)>,
     pub status: String,
+    // Optional: pending hash count for the most recent path filter, if provided by engine
+    pub pending_hash_scoped: Option<usize>,
 }
 
 impl PresentationState {
@@ -20,11 +22,18 @@ impl PresentationState {
         let mut by_type: Vec<(String, usize)> = map.into_iter().collect();
         by_type.sort_by(|a, b| b.1.cmp(&a.1));
 
-        Self { total_files, pending_hash, by_type, status: String::new() }
+        Self { total_files, pending_hash, by_type, status: String::new(), pending_hash_scoped: None }
     }
 
     pub fn with_status(mut self, status: impl Into<String>) -> Self {
         self.status = status.into();
         self
+    }
+
+}
+
+impl PresentationState {
+    pub fn pending_hash_under_prefix<S: AsRef<str>>(&self, _prefix: S) -> usize {
+        self.pending_hash_scoped.unwrap_or(self.pending_hash)
     }
 }

@@ -10,7 +10,7 @@ use crate::query::Query;
 
 use crate::paths::default_cache_dir;
 
-use crate::systems::{ContentHashSystem, FileDiscoverySystem, SystemScheduler};
+use crate::systems::{ContentHashSystem, ContentHashSystemScoped, FileDiscoverySystem, SystemProgress, SystemScheduler};
 use tracing::info;
 
 #[derive(Debug)]
@@ -92,10 +92,10 @@ impl DuplicateDetector {
 	pub async fn scan_and_hash(&mut self, path: PathBuf) -> DetectorResult<()> {
 		info!("Detector: scan_and_hash {}", path.display());
 		// Run discovery first
-		let discovery = FileDiscoverySystem::new(vec![path]);
+		let discovery = FileDiscoverySystem::new(vec![path.clone()]);
 		self.scheduler.add_system(discovery);
-		// Then hashing
-		self.scheduler.add_system(ContentHashSystem);
+		// Then hashing (scoped to requested path)
+		self.scheduler.add_system(ContentHashSystemScoped::new(path));
 		let res = self.scheduler
 			.run_all(&mut self.state, &mut self.memory_mgr)
 			.await
@@ -107,6 +107,29 @@ impl DuplicateDetector {
 		}
 		res
 	}
+	pub async fn process_until_complete_with_progress(
+		&mut self,
+		path: Option<PathBuf>,
+		progress: std::sync::Arc<dyn Fn(SystemProgress) + Send + Sync>,
+	) -> DetectorResult<()> {
+		if let Some(p) = path.clone() {
+			let discovery = FileDiscoverySystem::new(vec![p.clone()]).with_progress_callback(progress.clone());
+			self.scheduler.add_system(discovery);
+		}
+		self.scheduler.add_system(ContentHashSystem);
+		let res = self
+			.scheduler
+			.run_all(&mut self.state, &mut self.memory_mgr)
+			.await
+			.map_err(DetectorError::from);
+		if res.is_ok() {
+			if let Some(dir) = default_cache_dir() {
+				let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
+			}
+		}
+		res
+	}
+
 
 	pub async fn process_until_complete(&mut self) -> DetectorResult<()> {
 		let res = self.scheduler
@@ -145,12 +168,28 @@ impl DuplicateDetector {
 		self.state.data.height()
 	}
 	pub fn files_pending_hash(&self) -> usize {
-		self.state
+		self
+			.state
 			.data
 			.column("hashed")
 			.ok()
 			.and_then(|s| s.bool().ok())
 			.map(|b| b.into_iter().filter(|v| matches!(v, Some(false))).count())
+			.unwrap_or(0)
+	}
+
+	pub fn files_pending_hash_under_prefix<S: AsRef<str>>(&self, prefix: S) -> usize {
+		use polars::prelude::*;
+		let pref = prefix.as_ref();
+		self
+			.state
+			.data
+			.clone()
+			.lazy()
+			.filter(col("hashed").eq(lit(false)))
+			.filter(col("path").str().starts_with(lit(pref)))
+			.collect()
+			.map(|df| df.height())
 			.unwrap_or(0)
 	}
 	pub fn files_by_type_counts(&self) -> std::collections::HashMap<String, usize> {

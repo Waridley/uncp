@@ -57,3 +57,5 @@ chrono = { version = "0.4.31", features = ["serde"] }
 num_cpus = "1.16.0"
 serde_json = "1"
 dirs = "5"
+async-channel = "2"
+futures-lite = "2"

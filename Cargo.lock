@@ -5418,12 +5418,14 @@ name = "uncp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel 2.2.0",
  "async-trait",
  "bincode",
  "blake3",
  "chrono",
  "dirs 5.0.1",
  "futures",
+ "futures-lite 2.3.0",
  "image 0.24.9",
  "img_hash",
  "lru",
@@ -5451,6 +5453,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dirs 5.0.1",
+ "futures-lite 2.3.0",
  "smol 2.0.2",
  "tracing",
  "tracing-subscriber",

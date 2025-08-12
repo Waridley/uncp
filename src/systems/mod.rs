@@ -11,7 +11,7 @@ pub mod hashing;
 pub mod scheduler;
 
 pub use discovery::FileDiscoverySystem;
-pub use hashing::ContentHashSystem;
+pub use hashing::{ContentHashSystem, ContentHashSystemScoped};
 pub use scheduler::SystemScheduler;
 
 /// Common interface for all processing systems

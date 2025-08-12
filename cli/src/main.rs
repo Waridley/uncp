@@ -26,6 +26,8 @@ fn init_tracing(verbosity: u8) {
 }
 
 use dirs::cache_dir;
+use uncp::engine::{BackgroundEngine, EngineCommand, EngineEvent};
+
 use std::fs;
 use uncp::{DetectorConfig, DuplicateDetector};
 
@@ -45,9 +47,7 @@ async fn run(opts: Opts) -> anyhow::Result<()> {
 		Command::Scan { path, hash } => {
 			let mut detector = DuplicateDetector::new(DetectorConfig::default())?;
 			let cache_path = default_cache_dir();
-			if let Some(dir) = &cache_path {
-				ensure_dir(dir)?;
-			}
+			if let Some(dir) = &cache_path { ensure_dir(dir)?; }
 			if let Some(dir) = &cache_path {
 				if detector.load_cache_all(dir.clone())? {
 					tracing::info!("Loaded cache from {}", dir.display());
@@ -55,27 +55,39 @@ async fn run(opts: Opts) -> anyhow::Result<()> {
 			}
 
 			fn default_cache_dir() -> Option<PathBuf> {
-				cache_dir().map(|mut p| {
-					p.push("uncp");
-					p
-				})
+				cache_dir().map(|mut p| { p.push("uncp"); p })
+			}
+			fn ensure_dir(dir: &PathBuf) -> anyhow::Result<()> { fs::create_dir_all(dir)?; Ok(()) }
+
+			// Foreground CLI: run engine for parallel speedup, print progress to stderr, exit on completion
+			let (engine, mut events, cmds) = BackgroundEngine::start(detector);
+			let _ = cmds.send(EngineCommand::SetPath(path.clone())).await;
+			let _ = cmds.send(EngineCommand::Start).await;
+			use futures_lite::StreamExt;
+			let pref = path.to_string_lossy().to_string();
+			while let Ok(evt) = events.recv().await {
+				match evt {
+					EngineEvent::SnapshotReady(snap) => {
+						// Print a compact progress line to stderr (respects global tracing level)
+						eprintln!("progress: total={} pending_hash={}", snap.total_files, snap.pending_hash);
+						// Exit early if this requested directory is fully processed
+						if snap.pending_hash_under_prefix(&pref) == 0 {
+							break;
+						}
+					}
+					EngineEvent::Completed => break,
+					_ => {}
+				}
 			}
 
-			fn ensure_dir(dir: &PathBuf) -> anyhow::Result<()> {
-				fs::create_dir_all(dir)?;
-				Ok(())
+			// Save final state to cache and print summary
+			if let Some(dir) = default_cache_dir() {
+				// Re-load so we have a detector for printing
+				let mut det = DuplicateDetector::new(DetectorConfig::default())?;
+				if det.load_cache_all(dir.clone())? {}
+				print_summary(&det);
 			}
 
-			if hash {
-				detector.scan_and_hash(path).await?;
-			} else {
-				detector.scan_directory(path).await?;
-			}
-
-			if let Some(dir) = cache_path {
-				detector.save_cache_all(dir)?;
-			}
-			print_summary(&detector);
 		}
 	}
 	Ok(())

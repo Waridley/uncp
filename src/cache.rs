@@ -51,30 +51,36 @@ impl CacheManager {
 
 	pub fn save_all(&self, state: &ScanState, relations: &RelationStore) -> CacheResult<()> {
 		self.ensure_dir()?;
+		use std::io::Write;
 
-		// Save state DataFrame to Parquet
-		let mut f = File::create(self.state_path())?;
-		ParquetWriter::new(&mut f)
-			.with_compression(ParquetCompression::Zstd(None))
-			.finish(&mut state.clone().data.clone())?;
+		// Helper: write to temp file and atomically rename into place
+		fn atomic_write_parquet(path: PathBuf, mut df: DataFrame) -> CacheResult<()> {
+			use std::fs::File;
+			let tmp = path.with_extension("parquet.tmp");
+			let mut f = File::create(&tmp)?;
+			ParquetWriter::new(&mut f)
+				.with_compression(ParquetCompression::Zstd(None))
+				.finish(&mut df)?;
+			f.flush()?;
+			// Best-effort: on Unix we could fsync here; for now, rely on rename atomicity and flushing
+			std::fs::rename(tmp, path)?;
+			Ok(())
+		}
 
-		// Save relations
-		let mut fh = File::create(self.rel_hashes_path())?;
-		ParquetWriter::new(&mut fh)
-			.with_compression(ParquetCompression::Zstd(None))
-			.finish(&mut relations.clone().hash_relations.clone())?;
+		fn atomic_write_json(path: PathBuf, bytes: &[u8]) -> CacheResult<()> {
+			let tmp = path.with_extension("json.tmp");
+			fs::write(&tmp, bytes)?;
+			std::fs::rename(tmp, path)?;
+			Ok(())
+		}
 
-		let mut fg = File::create(self.rel_groups_path())?;
-		ParquetWriter::new(&mut fg)
-			.with_compression(ParquetCompression::Zstd(None))
-			.finish(&mut relations.clone().similarity_groups.clone())?;
+		// Save state DataFrame and relations atomically
+		atomic_write_parquet(self.state_path(), state.clone().data.clone())?;
+		atomic_write_parquet(self.rel_hashes_path(), relations.clone().hash_relations.clone())?;
+		atomic_write_parquet(self.rel_groups_path(), relations.clone().similarity_groups.clone())?;
+		atomic_write_parquet(self.rel_pairs_path(), relations.clone().pairwise_relations.clone())?;
 
-		let mut fp = File::create(self.rel_pairs_path())?;
-		ParquetWriter::new(&mut fp)
-			.with_compression(ParquetCompression::Zstd(None))
-			.finish(&mut relations.clone().pairwise_relations.clone())?;
-
-		// Save metadata JSON
+		// Save metadata JSON last
 		let meta = ScanMetadata {
 			version: 1,
 			scan_id: state.scan_id,
@@ -82,7 +88,7 @@ impl CacheManager {
 			file_count: state.data.height(),
 		};
 		let meta_json = serde_json::to_vec_pretty(&meta)?;
-		fs::write(self.meta_path(), meta_json)?;
+		atomic_write_json(self.meta_path(), &meta_json)?;
 
 		Ok(())
 	}
