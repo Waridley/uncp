@@ -254,12 +254,15 @@ impl DuplicateDetector {
 				match fs::metadata(path) {
 					Ok(metadata) => {
 						let current_size = metadata.len(); // Keep as u64 to match schema
-						let current_mtime = metadata
-							.modified()
-							.unwrap_or(std::time::UNIX_EPOCH)
-							.duration_since(std::time::UNIX_EPOCH)
-							.unwrap_or_default()
-							.as_nanos() as i64; // Convert to nanoseconds as per schema comment
+
+						// Use the same timestamp conversion as discovery system for consistency
+						let current_mtime = match metadata.modified() {
+							Ok(system_time) => {
+								let datetime = chrono::DateTime::<chrono::Utc>::from(system_time);
+								datetime.timestamp_nanos_opt().unwrap_or(0)
+							}
+							Err(_) => 0, // Default to epoch if timestamp unavailable
+						};
 
 						// Keep the file
 						keep_mask.push(true);
@@ -290,28 +293,23 @@ impl DuplicateDetector {
 			}
 		}
 
-		// Apply the keep mask to filter out deleted files
-		if keep_mask.iter().any(|&x| !x) {
+		// Apply both masks in a single operation to avoid length mismatches
+		if keep_mask.iter().any(|&x| !x) || invalidate_mask.iter().any(|&x| x) {
 			let keep_series = Series::new("keep", keep_mask.clone());
-			self.state.data = self.state.data
-				.clone()
-				.lazy()
-				.filter(lit(keep_series))
-				.collect()?;
-		}
+			let invalidate_series = Series::new("invalidate", invalidate_mask.clone());
 
-		// Apply the invalidate mask to mark modified files for re-hashing
-		if invalidate_mask.iter().any(|&x| x) {
-			let invalidate_series = Series::new("invalidate", invalidate_mask);
 			self.state.data = self.state.data
 				.clone()
 				.lazy()
+				// First apply invalidation to mark files for re-hashing
 				.with_columns([
 					when(lit(invalidate_series))
 						.then(lit(false))
 						.otherwise(col("hashed"))
 						.alias("hashed")
 				])
+				// Then filter out deleted files
+				.filter(lit(keep_series))
 				.collect()?;
 		}
 
