@@ -12,8 +12,10 @@ use crate::memory::MemoryManager;
 use crate::systems::{yield_periodically, System, SystemContext, SystemProgress, SystemRunner};
 
 /// System for discovering files in the filesystem
-#[derive(Debug)]
+
 pub struct FileDiscoverySystem {
+		/// Optional progress callback (shared for TUI/GUI)
+		pub progress_callback: Option<std::sync::Arc<dyn Fn(SystemProgress) + Send + Sync>> ,
 	/// Paths to scan
 	pub scan_paths: Vec<PathBuf>,
 	/// Whether to follow symbolic links
@@ -41,6 +43,7 @@ impl FileDiscoverySystem {
 			exclude_extensions: Vec::new(),
 			min_file_size: 0,
 			max_file_size: None,
+			progress_callback: None,
 		}
 	}
 
@@ -72,6 +75,15 @@ impl FileDiscoverySystem {
 	pub fn file_size_range(mut self, min: u64, max: Option<u64>) -> Self {
 		self.min_file_size = min;
 		self.max_file_size = max;
+		self
+	}
+
+	/// Attach a progress callback (TUI/GUI)
+	pub fn with_progress_callback(
+		mut self,
+		cb: std::sync::Arc<dyn Fn(SystemProgress) + Send + Sync>,
+	) -> Self {
+		self.progress_callback = Some(cb);
 		self
 	}
 
@@ -187,7 +199,11 @@ impl FileDiscoverySystem {
 
 			// Update progress
 			progress.update(files.len(), Some(path.to_string_lossy().to_string()));
+			// Report progress via context or attached callback
 			context.report_progress(progress.clone());
+			if let Some(ref cb) = self.progress_callback {
+				cb(progress.clone());
+			}
 		}
 
 		Ok(files)

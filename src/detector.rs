@@ -68,6 +68,27 @@ impl DuplicateDetector {
 		res
 	}
 
+	pub async fn scan_with_progress(
+		&mut self,
+		path: PathBuf,
+		progress: std::sync::Arc<dyn Fn(crate::systems::SystemProgress) + Send + Sync>,
+	) -> DetectorResult<()> {
+		info!("Detector: scan_directory {} (with progress)", path.display());
+		let discovery = FileDiscoverySystem::new(vec![path]).with_progress_callback(progress);
+		self.scheduler.add_system(discovery);
+		let res = self
+			.scheduler
+			.run_all(&mut self.state, &mut self.memory_mgr)
+			.await
+			.map_err(DetectorError::from);
+		if res.is_ok() {
+			if let Some(dir) = default_cache_dir() {
+				let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
+			}
+		}
+		res
+	}
+
 	pub async fn scan_and_hash(&mut self, path: PathBuf) -> DetectorResult<()> {
 		info!("Detector: scan_and_hash {}", path.display());
 		// Run discovery first

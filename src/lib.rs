@@ -12,6 +12,8 @@ pub mod query;
 pub mod similarity;
 pub mod paths;
 
+pub mod ui;
+
 pub mod systems;
 
 // Re-export main API types
