@@ -1,6 +1,6 @@
 //! Main API for duplicate detection
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::cache::CacheManager;
 use crate::data::{RelationStore, ScanState};
@@ -213,6 +213,110 @@ impl DuplicateDetector {
 			.collect()
 			.map(|df| df.height())
 			.unwrap_or(0)
+	}
+
+	/// Clean up stale cache entries by removing deleted files and marking modified files for re-processing
+	pub fn validate_cached_files(&mut self) -> DetectorResult<(usize, usize)> {
+		use polars::prelude::*;
+		use std::fs;
+
+		let mut files_removed = 0;
+		let mut files_invalidated = 0;
+
+		// Get all cached files with their metadata
+		let df = self.state.data.clone();
+		if df.height() == 0 {
+			return Ok((0, 0));
+		}
+
+		// Build a mask for files that should be kept
+		let mut keep_mask = Vec::new();
+		let mut invalidate_mask = Vec::new();
+
+		// Extract columns
+		let paths = df.column("path")?.str()?;
+		let cached_sizes = df.column("size")?.i64()?;
+		let cached_mtimes = df.column("modified_time")?.i64()?;
+		let hashed_flags = df.column("hashed")?.bool()?;
+
+		for (((path_opt, cached_size_opt), cached_mtime_opt), hashed_opt) in paths
+			.into_iter()
+			.zip(cached_sizes.into_iter())
+			.zip(cached_mtimes.into_iter())
+			.zip(hashed_flags.into_iter())
+		{
+			if let (Some(path_str), Some(cached_size), Some(cached_mtime), Some(is_hashed)) =
+				(path_opt, cached_size_opt, cached_mtime_opt, hashed_opt) {
+
+				let path = Path::new(path_str);
+
+				// Check if file still exists
+				match fs::metadata(path) {
+					Ok(metadata) => {
+						let current_size = metadata.len() as i64;
+						let current_mtime = metadata
+							.modified()
+							.unwrap_or(std::time::UNIX_EPOCH)
+							.duration_since(std::time::UNIX_EPOCH)
+							.unwrap_or_default()
+							.as_secs() as i64;
+
+						// Keep the file
+						keep_mask.push(true);
+
+						// Check if file has been modified
+						if current_size != cached_size || current_mtime != cached_mtime {
+							// File modified, mark for re-processing
+							invalidate_mask.push(true);
+							if is_hashed {
+								files_invalidated += 1;
+							}
+						} else {
+							// File unchanged
+							invalidate_mask.push(false);
+						}
+					}
+					Err(_) => {
+						// File no longer exists, remove it
+						keep_mask.push(false);
+						invalidate_mask.push(false);
+						files_removed += 1;
+					}
+				}
+			} else {
+				// Invalid row, remove it
+				keep_mask.push(false);
+				invalidate_mask.push(false);
+			}
+		}
+
+		// Apply the keep mask to filter out deleted files
+		if keep_mask.iter().any(|&x| !x) {
+			let keep_series = Series::new("keep", keep_mask.clone());
+			self.state.data = self.state.data
+				.clone()
+				.lazy()
+				.filter(lit(keep_series))
+				.collect()?;
+		}
+
+		// Apply the invalidate mask to mark modified files for re-hashing
+		if invalidate_mask.iter().any(|&x| x) {
+			let invalidate_series = Series::new("invalidate", invalidate_mask);
+			self.state.data = self.state.data
+				.clone()
+				.lazy()
+				.with_columns([
+					when(lit(invalidate_series))
+						.then(lit(false))
+						.otherwise(col("hashed"))
+						.alias("hashed")
+				])
+				.collect()?;
+		}
+
+		info!("Cache validation: {} files removed, {} files marked for re-processing", files_removed, files_invalidated);
+		Ok((files_removed, files_invalidated))
 	}
 	pub fn files_by_type_counts(&self) -> std::collections::HashMap<String, usize> {
 		let mut map = std::collections::HashMap::new();

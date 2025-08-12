@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use async_channel as channel;
 use futures_lite::future;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::systems::SystemProgress;
 use crate::{paths::default_cache_dir, DuplicateDetector};
@@ -30,6 +30,8 @@ pub enum EngineEvent {
 	CacheLoaded,
 	CacheSaving,
 	CacheSaved,
+	CacheValidating,
+	CacheValidated { files_removed: usize, files_invalidated: usize },
 }
 
 pub struct BackgroundEngine {
@@ -85,7 +87,20 @@ impl BackgroundEngine {
 								if let Ok(true) = detector.load_cache_all(dir) {
 									info!("Engine: loaded cache in background");
 									let _ = evt_tx.send(EngineEvent::CacheLoaded).await;
-									// Emit snapshot after loading cache
+
+									// Validate cached files against filesystem
+									let _ = evt_tx.send(EngineEvent::CacheValidating).await;
+									match detector.validate_cached_files() {
+										Ok((files_removed, files_invalidated)) => {
+											let _ = evt_tx.send(EngineEvent::CacheValidated { files_removed, files_invalidated }).await;
+										}
+										Err(e) => {
+											warn!("Cache validation failed: {}", e);
+											let _ = evt_tx.send(EngineEvent::CacheValidated { files_removed: 0, files_invalidated: 0 }).await;
+										}
+									}
+
+									// Emit snapshot after validation
 									let mut snap = crate::ui::PresentationState::from_detector(&detector);
 									if let Some(ref p) = current_path {
 										let scoped = detector.files_pending_hash_under_prefix(p.to_string_lossy());

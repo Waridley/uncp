@@ -231,6 +231,21 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 					// Don't change engine_status here, keep current operation status
 					pres = pres.clone().with_status("Cache saved successfully");
 				}
+				EngineEvent::CacheValidating => {
+					debug!("TUI: Cache validating");
+					engine_status = "Validating cache".to_string();
+					pres = pres.clone().with_status("Validating cached files against filesystem");
+				}
+				EngineEvent::CacheValidated { files_removed, files_invalidated } => {
+					debug!("TUI: Cache validated - {} removed, {} invalidated", files_removed, files_invalidated);
+					engine_status = "Ready".to_string();
+					let status_msg = if files_removed > 0 || files_invalidated > 0 {
+						format!("Cache validated: {} files removed, {} files marked for re-processing", files_removed, files_invalidated)
+					} else {
+						"Cache validated: all files up to date".to_string()
+					};
+					pres = pres.clone().with_status(status_msg);
+				}
 				EngineEvent::DiscoveryProgress(progress) => {
 					debug!("TUI: Discovery progress: {}/{} - {:?}",
 						progress.processed_items, progress.total_items, progress.current_item);
