@@ -82,14 +82,31 @@ impl ScanState {
 		}
 	}
 
-	/// Add files to the scan state
+	/// Add files to the scan state, deduplicating by path
 	pub fn add_files(&mut self, files: Vec<FileRecord>) -> DetectorResult<()> {
 		if files.is_empty() {
 			return Ok(());
 		}
 
 		let new_df = self.files_to_dataframe(files)?;
-		self.data = self.data.vstack(&new_df)?;
+
+		// If the existing dataframe is empty, just use the new data
+		if self.data.height() == 0 {
+			self.data = new_df;
+			return Ok(());
+		}
+
+		// Combine existing and new data, then deduplicate by path
+		// Keep the most recent entry for each path (from new_df)
+		use polars::prelude::*;
+		let combined = self.data.vstack(&new_df)?;
+
+		// Deduplicate by path, keeping the last occurrence (most recent)
+		self.data = combined
+			.lazy()
+			.unique(Some(vec!["path".to_string()]), UniqueKeepStrategy::Last)
+			.collect()?;
+
 		Ok(())
 	}
 
