@@ -189,8 +189,8 @@ impl Settings {
 		let available_memory = sys.available_memory() as usize;
 
 		// Use half of available memory, but at least 100MB and at most 4GB
-		let max_total_loaded_bytes = (available_memory / 2)
-			.clamp(100 * 1024 * 1024, 4 * 1024 * 1024 * 1024); // 100MB minimum, 4GB maximum
+		let max_total_loaded_bytes =
+			(available_memory / 2).clamp(100 * 1024 * 1024, 4 * 1024 * 1024 * 1024); // 100MB minimum, 4GB maximum
 
 		// One file per CPU core, but at least 4 and at most 1000
 		let num_cpus = sys.cpus().len();

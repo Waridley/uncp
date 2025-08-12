@@ -162,8 +162,8 @@ impl CacheManager {
 		// Load metadata
 		let meta_bytes = fs::read(self.meta_path())?;
 		let meta: ScanMetadata = serde_json::from_slice(&meta_bytes)?;
-		let started = chrono::DateTime::from_timestamp_millis(meta.last_scan_time)
-			.unwrap_or_else(Utc::now);
+		let started =
+			chrono::DateTime::from_timestamp_millis(meta.last_scan_time).unwrap_or_else(Utc::now);
 
 		let state = ScanState {
 			data: state_df,
