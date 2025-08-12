@@ -51,26 +51,54 @@ impl CacheManager {
 
 	pub fn save_all(&self, state: &ScanState, relations: &RelationStore) -> CacheResult<()> {
 		self.ensure_dir()?;
-		use std::io::Write;
 
-		// Helper: write to temp file and atomically rename into place
+		// Helper: write to temp file and atomically rename into place (cross-platform)
 		fn atomic_write_parquet(path: PathBuf, mut df: DataFrame) -> CacheResult<()> {
 			use std::fs::File;
+			use std::io::Write;
+
 			let tmp = path.with_extension("parquet.tmp");
 			let mut f = File::create(&tmp)?;
 			ParquetWriter::new(&mut f)
 				.with_compression(ParquetCompression::Zstd(None))
 				.finish(&mut df)?;
 			f.flush()?;
-			// Best-effort: on Unix we could fsync here; for now, rely on rename atomicity and flushing
-			std::fs::rename(tmp, path)?;
+
+			// Ensure data is written to disk before rename
+			f.sync_all()?;
+			drop(f); // Close file before rename
+
+			// Cross-platform atomic rename: remove target first on Windows
+			cross_platform_atomic_rename(&tmp, &path)?;
 			Ok(())
 		}
 
 		fn atomic_write_json(path: PathBuf, bytes: &[u8]) -> CacheResult<()> {
 			let tmp = path.with_extension("json.tmp");
 			fs::write(&tmp, bytes)?;
-			std::fs::rename(tmp, path)?;
+
+			// Cross-platform atomic rename: remove target first on Windows
+			cross_platform_atomic_rename(&tmp, &path)?;
+			Ok(())
+		}
+
+		// Cross-platform atomic rename that handles Windows limitations
+		fn cross_platform_atomic_rename(from: &std::path::Path, to: &std::path::Path) -> CacheResult<()> {
+			#[cfg(windows)]
+			{
+				// On Windows, remove target file first if it exists
+				if to.exists() {
+					std::fs::remove_file(to)?;
+				}
+				std::fs::rename(from, to)?;
+			}
+
+			#[cfg(not(windows))]
+			{
+				// On Unix-like systems, rename is atomic even if target exists
+				std::fs::rename(from, to)?;
+			}
+
 			Ok(())
 		}
 
