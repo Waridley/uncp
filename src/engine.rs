@@ -79,38 +79,66 @@ impl BackgroundEngine {
 					}
 
 					if running {
-						// Small step: run discovery and hashing for current path then yield
-						if let Some(p) = current_path.clone() {
-							// Set up progress callbacks to emit engine events
-							let evt_tx_discovery = evt_tx.clone();
-							let discovery_progress = std::sync::Arc::new(move |progress: SystemProgress| {
-								let _ = evt_tx_discovery.try_send(EngineEvent::DiscoveryProgress(progress));
-							});
+						// Check if there's work to do
+						let pending_hash_count = detector.files_pending_hash();
+						let total_files = detector.total_files();
 
+						// Simple heuristic: if we have very few files compared to what we expect,
+						// we probably need more discovery. If we have files but many pending hash, we need hashing.
+						let needs_discovery = if let Some(ref _p) = current_path {
+							// If we have a path set but very few files, we likely need discovery
+							total_files < 10 // Simple heuristic - could be improved
+						} else {
+							false
+						};
+
+						let needs_hashing = pending_hash_count > 0;
+
+						if needs_discovery {
+							if let Some(p) = current_path.clone() {
+								// Set up progress callback for discovery
+								let evt_tx_discovery = evt_tx.clone();
+								let discovery_progress = std::sync::Arc::new(move |progress: SystemProgress| {
+									let _ = evt_tx_discovery.try_send(EngineEvent::DiscoveryProgress(progress));
+								});
+
+								// Run discovery for this path (this will complete the discovery)
+								let _ = detector.scan_with_progress(p.clone(), discovery_progress).await;
+							}
+						} else if needs_hashing {
+							// Set up progress callback for hashing
 							let evt_tx_hashing = evt_tx.clone();
 							let hashing_progress = std::sync::Arc::new(move |progress: SystemProgress| {
 								let _ = evt_tx_hashing.try_send(EngineEvent::HashingProgress(progress));
 							});
 
-							let _ = detector.scan_with_progress(p.clone(), discovery_progress).await;
-							let _ = detector.process_until_complete_with_progress(Some(p.clone()), hashing_progress).await;
+							// Process hashing work
+							let _ = detector.process_until_complete_with_progress(None, hashing_progress).await;
+						} else {
+							// No work to do, emit completion event and pause
+							let _ = evt_tx.send(EngineEvent::Completed).await;
+							running = false;
 						}
-						// Emit snapshot for UI/CLI refresh, with scoped pending if path set
+
+						// Always emit snapshot for UI updates
 						let mut snap = crate::ui::PresentationState::from_detector(&detector);
 						if let Some(ref p) = current_path {
-							let scoped =
-								detector.files_pending_hash_under_prefix(p.to_string_lossy());
+							let scoped = detector.files_pending_hash_under_prefix(p.to_string_lossy());
 							snap.pending_hash_scoped = Some(scoped);
 						}
 						let _ = evt_tx.send(EngineEvent::SnapshotReady(snap)).await;
-						// Throttled autosave: every ~1s or when many files processed, to balance durability vs. throughput
-						if last_save.elapsed() >= std::time::Duration::from_secs(1) {
+
+						// Throttled autosave: every ~5s to avoid blocking frequently
+						if last_save.elapsed() >= std::time::Duration::from_secs(5) {
 							if let Some(dir) = default_cache_dir() {
+								// Save cache synchronously but quickly
 								let _ = detector.save_cache_all(dir);
 							}
 							last_save = std::time::Instant::now();
 						}
-						smol::Timer::after(std::time::Duration::from_millis(75)).await;
+
+						// Short yield to keep UI responsive
+						smol::Timer::after(std::time::Duration::from_millis(100)).await;
 					} else {
 						// Even when not running, emit snapshots for UI updates
 						let mut snap = crate::ui::PresentationState::from_detector(&detector);
