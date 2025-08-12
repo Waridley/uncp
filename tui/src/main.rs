@@ -11,12 +11,13 @@ use futures_lite::future;
 
 use crossterm::event::{self, Event, KeyCode};
 use ratatui::{
-	layout::{Constraint, Direction, Layout},
+	layout::{Constraint, Direction, Layout, Rect, Flex},
 	style::{Color, Modifier, Style},
 	text::{Line, Span},
-	widgets::{Block, Borders, List, ListItem, Paragraph},
+	widgets::{Block, Borders, List, ListItem, Paragraph, Clear},
 	Frame,
 };
+
 use tracing::{debug, info};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use uncp::engine::{BackgroundEngine, EngineCommand, EngineEvent};
@@ -154,17 +155,22 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 				}
 
 				Action::SubmitPath => {
-					info!("Submitting path: {}", input_buffer.trim());
 					if in_path_input {
-						current_path = PathBuf::from(input_buffer.trim());
+						let new_path_str = input_buffer.trim();
+						info!("Submitting path: {}", new_path_str);
+						current_path = PathBuf::from(new_path_str);
 						in_path_input = false;
 						pres = pres
 							.clone()
 							.with_status(format!("Path set to {}", current_path.display()));
 						info!("Path set to {}", current_path.display());
+
+						// Clear existing state and restart engine with new path
+						let _ = cmds.try_send(EngineCommand::Stop);
+						let _ = cmds.try_send(EngineCommand::ClearState);
+						let _ = cmds.try_send(EngineCommand::SetPath(current_path.clone()));
+						let _ = cmds.try_send(EngineCommand::Start);
 					}
-					// Also guide engine to new path
-					let _ = cmds.try_send(EngineCommand::SetPath(current_path.clone()));
 				}
 
 				Action::Scan => {
@@ -333,7 +339,7 @@ fn draw_enhanced(
 	frame: &mut Frame,
 	pres: &PresentationState,
 	in_input: bool,
-	input: &str,
+	input_buffer: &str,
 	progress: Option<&str>,
 	engine_status: &str,
 	discovery_progress: &Option<uncp::systems::SystemProgress>,
@@ -346,7 +352,7 @@ fn draw_enhanced(
 			Constraint::Length(4), // header
 			Constraint::Min(5),    // body
 			Constraint::Length(5), // status footer
-			Constraint::Length(3), // keybinding hints
+			Constraint::Length(1), // keybinding hints (no box, just one line)
 		])
 		.split(frame.area());
 
@@ -460,9 +466,9 @@ fn draw_enhanced(
 	}
 	if in_input {
 		legacy_status = if legacy_status.is_empty() {
-			format!("Path: {}", input)
+			format!("Path: {}", input_buffer)
 		} else {
-			format!("{} | Path: {}", legacy_status, input)
+			format!("{} | Path: {}", legacy_status, input_buffer)
 		};
 	}
 	if !legacy_status.is_empty() {
@@ -473,7 +479,7 @@ fn draw_enhanced(
 		.block(Block::default().borders(Borders::ALL).title("Status"));
 	frame.render_widget(footer, chunks[2]);
 
-	// Keybinding hints at the bottom with distinct styling
+	// Keybinding hints at the bottom with distinct styling (no box, better contrast)
 	let keybinding_hints = Paragraph::new(Line::from(vec![
 		Span::styled("Keys: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
 		Span::styled("q", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
@@ -487,9 +493,33 @@ fn draw_enhanced(
 		Span::styled("p", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
 		Span::raw(" path"),
 	]))
-	.block(Block::default().borders(Borders::ALL).title("Controls"))
-	.style(Style::default().bg(Color::DarkGray));
+	.style(Style::default().bg(Color::Black).fg(Color::White));
 	frame.render_widget(keybinding_hints, chunks[3]);
+
+	// Render path input popup if in path input mode
+	if in_input {
+		let popup_area = popup_area(frame.area(), 60, 20);
+		frame.render_widget(Clear, popup_area); // Clear the background
+
+		let input_display = format!("{}_", input_buffer); // Add cursor
+		let input_widget = Paragraph::new(input_display)
+			.block(
+				Block::default()
+					.borders(Borders::ALL)
+					.title("Set Path")
+					.style(Style::default().fg(Color::Yellow))
+			);
+		frame.render_widget(input_widget, popup_area);
+	}
+}
+
+/// Helper function to create a centered popup area
+fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
+	let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
+	let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
+	let [area] = vertical.areas(area);
+	let [area] = horizontal.areas(area);
+	area
 }
 
 fn handle_events(in_input: bool, input_buffer: &mut String) -> std::io::Result<Option<Action>> {

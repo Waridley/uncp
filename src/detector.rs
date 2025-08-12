@@ -173,6 +173,15 @@ impl DuplicateDetector {
 		Query::new(&self.state, &self.relations)
 	}
 
+	/// Clear all detector state (files, relations, etc.) for a fresh start
+	pub fn clear_state(&mut self) {
+		info!("Detector: clearing all state");
+		self.state = ScanState::new().expect("Failed to create new ScanState");
+		self.relations = RelationStore::new().expect("Failed to create new RelationStore");
+		// Clear any pending systems in the scheduler
+		self.scheduler = SystemScheduler::new();
+	}
+
 	// Disk caching stubs for now
 
 	pub fn total_files(&self) -> usize {

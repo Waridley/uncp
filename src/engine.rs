@@ -15,6 +15,7 @@ pub enum EngineCommand {
 	Start,
 	Pause,
 	Stop,
+	ClearState,
 	LoadCache(PathBuf),
 }
 
@@ -82,6 +83,10 @@ impl BackgroundEngine {
 								running = false;
 							}
 							EngineCommand::Stop => break,
+							EngineCommand::ClearState => {
+								info!("Engine: clearing detector state");
+								detector.clear_state();
+							}
 							EngineCommand::LoadCache(dir) => {
 								let _ = evt_tx.send(EngineEvent::CacheLoading).await;
 								if let Ok(true) = detector.load_cache_all(dir) {
