@@ -1,26 +1,139 @@
-//! Disk caching stub module (to be expanded)
+//! Disk caching and persistence (Parquet + JSON metadata)
 
-use std::path::PathBuf;
+use chrono::Utc;
+use polars::io::parquet::{ParquetCompression, ParquetReader, ParquetWriter};
+use polars::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::fs::{self, File};
+use std::path::PathBuf;
 
-use crate::error::{CacheResult};
+use crate::data::{RelationStore, ScanState};
+use crate::error::CacheResult;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanMetadata {
-    pub scan_id: u32,
-    pub last_scan_time: u64,
-    pub file_count: usize,
-    pub directory_tree_hash: String,
+	pub version: u32,
+	pub scan_id: u32,
+	pub last_scan_time: i64,
+	pub file_count: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CacheManager {
-    pub cache_dir: PathBuf,
+	pub cache_dir: PathBuf,
 }
 
 impl CacheManager {
-    pub fn new(cache_dir: PathBuf) -> Self { Self { cache_dir } }
+	pub fn new(cache_dir: PathBuf) -> Self {
+		Self { cache_dir }
+	}
 
-    pub fn save_metadata(&self, _meta: &ScanMetadata) -> CacheResult<()> { Ok(()) }
-    pub fn load_metadata(&self) -> CacheResult<Option<ScanMetadata>> { Ok(None) }
+	fn meta_path(&self) -> PathBuf {
+		self.cache_dir.join("meta.json")
+	}
+	fn state_path(&self) -> PathBuf {
+		self.cache_dir.join("state.parquet")
+	}
+	fn rel_hashes_path(&self) -> PathBuf {
+		self.cache_dir.join("relations_hashes.parquet")
+	}
+	fn rel_groups_path(&self) -> PathBuf {
+		self.cache_dir.join("relations_groups.parquet")
+	}
+	fn rel_pairs_path(&self) -> PathBuf {
+		self.cache_dir.join("relations_pairs.parquet")
+	}
+
+	pub fn ensure_dir(&self) -> CacheResult<()> {
+		fs::create_dir_all(&self.cache_dir)?;
+		Ok(())
+	}
+
+	pub fn save_all(&self, state: &ScanState, relations: &RelationStore) -> CacheResult<()> {
+		self.ensure_dir()?;
+
+		// Save state DataFrame to Parquet
+		let mut f = File::create(self.state_path())?;
+		ParquetWriter::new(&mut f)
+			.with_compression(ParquetCompression::Zstd(None))
+			.finish(&mut state.clone().data.clone())?;
+
+		// Save relations
+		let mut fh = File::create(self.rel_hashes_path())?;
+		ParquetWriter::new(&mut fh)
+			.with_compression(ParquetCompression::Zstd(None))
+			.finish(&mut relations.clone().hash_relations.clone())?;
+
+		let mut fg = File::create(self.rel_groups_path())?;
+		ParquetWriter::new(&mut fg)
+			.with_compression(ParquetCompression::Zstd(None))
+			.finish(&mut relations.clone().similarity_groups.clone())?;
+
+		let mut fp = File::create(self.rel_pairs_path())?;
+		ParquetWriter::new(&mut fp)
+			.with_compression(ParquetCompression::Zstd(None))
+			.finish(&mut relations.clone().pairwise_relations.clone())?;
+
+		// Save metadata JSON
+		let meta = ScanMetadata {
+			version: 1,
+			scan_id: state.scan_id,
+			last_scan_time: Utc::now().timestamp_millis(),
+			file_count: state.data.height(),
+		};
+		let meta_json = serde_json::to_vec_pretty(&meta)?;
+		fs::write(self.meta_path(), meta_json)?;
+
+		Ok(())
+	}
+
+	pub fn load_all(&self) -> CacheResult<Option<(ScanState, RelationStore)>> {
+		if !self.state_path().exists() || !self.meta_path().exists() {
+			return Ok(None);
+		}
+
+		// Load state DF
+		let f = File::open(self.state_path())?;
+		let state_df = ParquetReader::new(f).finish()?;
+
+		// Load relations
+		let rel_hashes = if self.rel_hashes_path().exists() {
+			ParquetReader::new(File::open(self.rel_hashes_path())?).finish()?
+		} else {
+			DataFrame::default()
+		};
+		let rel_groups = if self.rel_groups_path().exists() {
+			ParquetReader::new(File::open(self.rel_groups_path())?).finish()?
+		} else {
+			DataFrame::default()
+		};
+		let rel_pairs = if self.rel_pairs_path().exists() {
+			ParquetReader::new(File::open(self.rel_pairs_path())?).finish()?
+		} else {
+			DataFrame::default()
+		};
+
+		// Load metadata
+		let meta_bytes = fs::read(self.meta_path())?;
+		let meta: ScanMetadata = serde_json::from_slice(&meta_bytes)?;
+		let started = chrono::DateTime::from_timestamp_millis(meta.last_scan_time)
+			.unwrap_or_else(|| Utc::now());
+
+		let state = ScanState {
+			data: state_df,
+			scan_id: meta.scan_id,
+			scan_started: started,
+		};
+		let relations = RelationStore {
+			hash_relations: rel_hashes,
+			similarity_groups: rel_groups,
+			pairwise_relations: rel_pairs,
+		};
+
+		Ok(Some((state, relations)))
+	}
+
+	pub fn cache_exists(&self) -> bool {
+		self.state_path().exists() && self.meta_path().exists()
+	}
 }
