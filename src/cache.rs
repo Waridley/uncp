@@ -83,7 +83,10 @@ impl CacheManager {
 		}
 
 		// Cross-platform atomic rename that handles Windows limitations
-		fn cross_platform_atomic_rename(from: &std::path::Path, to: &std::path::Path) -> CacheResult<()> {
+		fn cross_platform_atomic_rename(
+			from: &std::path::Path,
+			to: &std::path::Path,
+		) -> CacheResult<()> {
 			#[cfg(windows)]
 			{
 				// On Windows, remove target file first if it exists
@@ -160,7 +163,7 @@ impl CacheManager {
 		let meta_bytes = fs::read(self.meta_path())?;
 		let meta: ScanMetadata = serde_json::from_slice(&meta_bytes)?;
 		let started = chrono::DateTime::from_timestamp_millis(meta.last_scan_time)
-			.unwrap_or_else(|| Utc::now());
+			.unwrap_or_else(Utc::now);
 
 		let state = ScanState {
 			data: state_df,

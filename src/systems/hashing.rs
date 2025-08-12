@@ -87,22 +87,20 @@ impl SystemRunner for ContentHashSystem {
 		let mut upd_hashes: Vec<Option<String>> = Vec::with_capacity(paths_series.len());
 		let mut upd_flags: Vec<bool> = Vec::with_capacity(paths_series.len());
 
-		for opt_path in paths_series.into_iter() {
-			if let Some(path) = opt_path {
-				upd_paths.push(path.to_string());
-				// Try hashing; on error, skip but leave hashed=false so it can retry or be logged later
-				match smol::fs::read(path).await {
-					Ok(bytes) => {
-						let digest = blake3::hash(&bytes);
-						upd_hashes.push(Some(digest.to_hex().to_string()));
-						upd_flags.push(true);
-						trace!("Hashed {}", path);
-					}
-					Err(_) => {
-						upd_hashes.push(None);
-						upd_flags.push(false);
-						warn!("Hashing: failed to read {}", path);
-					}
+		for path in paths_series.into_iter().flatten() {
+			upd_paths.push(path.to_string());
+			// Try hashing; on error, skip but leave hashed=false so it can retry or be logged later
+			match smol::fs::read(path).await {
+				Ok(bytes) => {
+					let digest = blake3::hash(&bytes);
+					upd_hashes.push(Some(digest.to_hex().to_string()));
+					upd_flags.push(true);
+					trace!("Hashed {}", path);
+				}
+				Err(_) => {
+					upd_hashes.push(None);
+					upd_flags.push(false);
+					warn!("Hashing: failed to read {}", path);
 				}
 			}
 		}

@@ -11,10 +11,10 @@ use futures_lite::future;
 
 use crossterm::event::{self, Event, KeyCode};
 use ratatui::{
-	layout::{Constraint, Direction, Layout, Rect, Flex},
+	layout::{Constraint, Direction, Flex, Layout, Rect},
 	style::{Color, Modifier, Style},
 	text::{Line, Span},
-	widgets::{Block, Borders, List, ListItem, Paragraph, Clear},
+	widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 	Frame,
 };
 
@@ -96,16 +96,20 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 
 	// Start background engine and subscribe to events
 	// Use non-blocking detector creation to avoid startup delay
-	let detector = uncp::DuplicateDetector::new(uncp::DetectorConfig::default()).expect("init detector");
+	let detector =
+		uncp::DuplicateDetector::new(uncp::DetectorConfig::default()).expect("init detector");
 	let (_engine, events, cmds) = BackgroundEngine::start(detector);
 
 	// Load cache in background after TUI starts
 	let cmds_clone = cmds.clone();
 	smol::spawn(async move {
 		if let Some(dir) = uncp::paths::default_cache_dir() {
-			let _ = cmds_clone.send(uncp::engine::EngineCommand::LoadCache(dir)).await;
+			let _ = cmds_clone
+				.send(uncp::engine::EngineCommand::LoadCache(dir))
+				.await;
 		}
-	}).detach();
+	})
+	.detach();
 	let evt_rx = events;
 	// Set initial path and start
 	let _ = cmds.try_send(EngineCommand::SetPath(current_path.clone()));
@@ -204,7 +208,10 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 		while let Ok(evt) = evt_rx.try_recv() {
 			match evt {
 				EngineEvent::SnapshotReady(snap) => {
-					debug!("TUI: Received snapshot with {} files, {} pending hash", snap.total_files, snap.pending_hash);
+					debug!(
+						"TUI: Received snapshot with {} files, {} pending hash",
+						snap.total_files, snap.pending_hash
+					);
 					pres = snap;
 				}
 				EngineEvent::Started => {
@@ -240,26 +247,41 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 				EngineEvent::CacheValidating => {
 					debug!("TUI: Cache validating");
 					engine_status = "Validating cache".to_string();
-					pres = pres.clone().with_status("Validating cached files against filesystem");
+					pres = pres
+						.clone()
+						.with_status("Validating cached files against filesystem");
 				}
-				EngineEvent::CacheValidated { files_removed, files_invalidated } => {
-					debug!("TUI: Cache validated - {} removed, {} invalidated", files_removed, files_invalidated);
+				EngineEvent::CacheValidated {
+					files_removed,
+					files_invalidated,
+				} => {
+					debug!(
+						"TUI: Cache validated - {} removed, {} invalidated",
+						files_removed, files_invalidated
+					);
 					engine_status = "Ready".to_string();
 					let status_msg = if files_removed > 0 || files_invalidated > 0 {
-						format!("Cache validated: {} files removed, {} files marked for re-processing", files_removed, files_invalidated)
+						format!(
+							"Cache validated: {} files removed, {} files marked for re-processing",
+							files_removed, files_invalidated
+						)
 					} else {
 						"Cache validated: all files up to date".to_string()
 					};
 					pres = pres.clone().with_status(status_msg);
 				}
 				EngineEvent::DiscoveryProgress(progress) => {
-					debug!("TUI: Discovery progress: {}/{} - {:?}",
-						progress.processed_items, progress.total_items, progress.current_item);
+					debug!(
+						"TUI: Discovery progress: {}/{} - {:?}",
+						progress.processed_items, progress.total_items, progress.current_item
+					);
 
 					// Calculate processing speed
 					let now = std::time::Instant::now();
 					if now.duration_since(last_progress_update).as_secs() >= 1 {
-						let items_processed = progress.processed_items.saturating_sub(last_processed_count);
+						let items_processed = progress
+							.processed_items
+							.saturating_sub(last_processed_count);
 						let elapsed = now.duration_since(last_progress_update).as_secs_f64();
 						if elapsed > 0.0 {
 							processing_speed = Some(items_processed as f64 / elapsed);
@@ -272,13 +294,17 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 					engine_status = "Discovering files".to_string();
 				}
 				EngineEvent::HashingProgress(progress) => {
-					debug!("TUI: Hashing progress: {}/{} - {:?}",
-						progress.processed_items, progress.total_items, progress.current_item);
+					debug!(
+						"TUI: Hashing progress: {}/{} - {:?}",
+						progress.processed_items, progress.total_items, progress.current_item
+					);
 
 					// Calculate processing speed for hashing
 					let now = std::time::Instant::now();
 					if now.duration_since(last_progress_update).as_secs() >= 1 {
-						let items_processed = progress.processed_items.saturating_sub(last_processed_count);
+						let items_processed = progress
+							.processed_items
+							.saturating_sub(last_processed_count);
 						let elapsed = now.duration_since(last_progress_update).as_secs_f64();
 						if elapsed > 0.0 {
 							processing_speed = Some(items_processed as f64 / elapsed);
@@ -335,6 +361,7 @@ enum Action {
 	SubmitPath,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_enhanced(
 	frame: &mut Frame,
 	pres: &PresentationState,
@@ -398,7 +425,7 @@ fn draw_enhanced(
 		if let Some(ref current) = disc.current_item {
 			// Truncate long paths for display
 			let display_path = if current.len() > 60 {
-				format!("...{}", &current[current.len()-57..])
+				format!("...{}", &current[current.len() - 57..])
 			} else {
 				current.clone()
 			};
@@ -410,25 +437,30 @@ fn draw_enhanced(
 		if discovered_files == 0 {
 			"Discovery: 0 files - No files discovered yet".to_string()
 		} else {
-			format!("Discovery: {} files - Discovery completed", discovered_files)
+			format!(
+				"Discovery: {} files - Discovery completed",
+				discovered_files
+			)
 		}
 	};
 	status_lines.push(Line::from(Span::raw(disc_line)));
 
 	// Always show hashing status based on current detector state
-	let mut hash_line = if let Some(ref hash) = hashing_progress {
+	let hash_line = if let Some(ref hash) = hashing_progress {
 		// Use progress event data if available
 		let percentage = if hash.total_items > 0 {
 			(hash.processed_items as f64 / hash.total_items as f64 * 100.0) as u32
 		} else {
 			0
 		};
-		let mut line = format!("Hashing: {}/{} ({}%)",
-			hash.processed_items, hash.total_items, percentage);
+		let mut line = format!(
+			"Hashing: {}/{} ({}%)",
+			hash.processed_items, hash.total_items, percentage
+		);
 		if let Some(ref current) = hash.current_item {
 			// Truncate long paths for display
 			let display_path = if current.len() > 50 {
-				format!("...{}", &current[current.len()-47..])
+				format!("...{}", &current[current.len() - 47..])
 			} else {
 				current.clone()
 			};
@@ -440,8 +472,10 @@ fn draw_enhanced(
 		if total_files == 0 {
 			"Hashing: 0/0 (0%) - No files to hash".to_string()
 		} else if pending_files == 0 {
-			format!("Hashing: {}/{} (100%) - All files hashed",
-				total_files, total_files)
+			format!(
+				"Hashing: {}/{} (100%) - All files hashed",
+				total_files, total_files
+			)
 		} else {
 			let hashed_files = total_files - pending_files;
 			let percentage = if total_files > 0 {
@@ -449,8 +483,10 @@ fn draw_enhanced(
 			} else {
 				0
 			};
-			format!("Hashing: {}/{} ({}%) - {} files pending",
-				hashed_files, total_files, percentage, pending_files)
+			format!(
+				"Hashing: {}/{} ({}%) - {} files pending",
+				hashed_files, total_files, percentage, pending_files
+			)
 		}
 	};
 	status_lines.push(Line::from(Span::raw(hash_line)));
@@ -475,22 +511,52 @@ fn draw_enhanced(
 		status_lines.push(Line::from(Span::raw(legacy_status)));
 	}
 
-	let footer = Paragraph::new(status_lines)
-		.block(Block::default().borders(Borders::ALL).title("Status"));
+	let footer =
+		Paragraph::new(status_lines).block(Block::default().borders(Borders::ALL).title("Status"));
 	frame.render_widget(footer, chunks[2]);
 
 	// Keybinding hints at the bottom with distinct styling (no box, better contrast)
 	let keybinding_hints = Paragraph::new(Line::from(vec![
-		Span::styled("Keys: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-		Span::styled("q", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::styled(
+			"Keys: ",
+			Style::default()
+				.fg(Color::Yellow)
+				.add_modifier(Modifier::BOLD),
+		),
+		Span::styled(
+			"q",
+			Style::default()
+				.fg(Color::Green)
+				.add_modifier(Modifier::BOLD),
+		),
 		Span::raw(" quit  "),
-		Span::styled("r", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::styled(
+			"r",
+			Style::default()
+				.fg(Color::Green)
+				.add_modifier(Modifier::BOLD),
+		),
 		Span::raw(" refresh  "),
-		Span::styled("s", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::styled(
+			"s",
+			Style::default()
+				.fg(Color::Green)
+				.add_modifier(Modifier::BOLD),
+		),
 		Span::raw(" scan  "),
-		Span::styled("h", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::styled(
+			"h",
+			Style::default()
+				.fg(Color::Green)
+				.add_modifier(Modifier::BOLD),
+		),
 		Span::raw(" hash  "),
-		Span::styled("p", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::styled(
+			"p",
+			Style::default()
+				.fg(Color::Green)
+				.add_modifier(Modifier::BOLD),
+		),
 		Span::raw(" path"),
 	]))
 	.style(Style::default().bg(Color::Black).fg(Color::White));
@@ -502,13 +568,12 @@ fn draw_enhanced(
 		frame.render_widget(Clear, popup_area); // Clear the background
 
 		let input_display = format!("{}_", input_buffer); // Add cursor
-		let input_widget = Paragraph::new(input_display)
-			.block(
-				Block::default()
-					.borders(Borders::ALL)
-					.title("Set Path")
-					.style(Style::default().fg(Color::Yellow))
-			);
+		let input_widget = Paragraph::new(input_display).block(
+			Block::default()
+				.borders(Borders::ALL)
+				.title("Set Path")
+				.style(Style::default().fg(Color::Yellow)),
+		);
 		frame.render_widget(input_widget, popup_area);
 	}
 }

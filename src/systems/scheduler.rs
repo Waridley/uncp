@@ -10,6 +10,12 @@ pub struct SystemScheduler {
 	pub systems: Vec<Box<dyn SystemRunner>>,
 }
 
+impl Default for SystemScheduler {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl SystemScheduler {
 	pub fn new() -> Self {
 		Self {

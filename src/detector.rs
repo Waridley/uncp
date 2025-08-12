@@ -244,8 +244,8 @@ impl DuplicateDetector {
 
 		// Extract columns
 		let paths = df.column("path")?.str()?;
-		let cached_sizes = df.column("size")?.u64()?;  // size is u64 in schema
-		let cached_mtimes = df.column("modified")?.i64()?;  // column name is "modified", not "modified_time"
+		let cached_sizes = df.column("size")?.u64()?; // size is u64 in schema
+		let cached_mtimes = df.column("modified")?.i64()?; // column name is "modified", not "modified_time"
 		let hashed_flags = df.column("hashed")?.bool()?;
 
 		for (((path_opt, cached_size_opt), cached_mtime_opt), hashed_opt) in paths
@@ -255,8 +255,8 @@ impl DuplicateDetector {
 			.zip(hashed_flags.into_iter())
 		{
 			if let (Some(path_str), Some(cached_size), Some(cached_mtime), Some(is_hashed)) =
-				(path_opt, cached_size_opt, cached_mtime_opt, hashed_opt) {
-
+				(path_opt, cached_size_opt, cached_mtime_opt, hashed_opt)
+			{
 				let path = Path::new(path_str);
 
 				// Check if file still exists
@@ -307,22 +307,25 @@ impl DuplicateDetector {
 			let keep_series = Series::new("keep", keep_mask.clone());
 			let invalidate_series = Series::new("invalidate", invalidate_mask.clone());
 
-			self.state.data = self.state.data
+			self.state.data = self
+				.state
+				.data
 				.clone()
 				.lazy()
 				// First apply invalidation to mark files for re-hashing
-				.with_columns([
-					when(lit(invalidate_series))
-						.then(lit(false))
-						.otherwise(col("hashed"))
-						.alias("hashed")
-				])
+				.with_columns([when(lit(invalidate_series))
+					.then(lit(false))
+					.otherwise(col("hashed"))
+					.alias("hashed")])
 				// Then filter out deleted files
 				.filter(lit(keep_series))
 				.collect()?;
 		}
 
-		info!("Cache validation: {} files removed, {} files marked for re-processing", files_removed, files_invalidated);
+		info!(
+			"Cache validation: {} files removed, {} files marked for re-processing",
+			files_removed, files_invalidated
+		);
 		Ok((files_removed, files_invalidated))
 	}
 	pub fn files_by_type_counts(&self) -> std::collections::HashMap<String, usize> {

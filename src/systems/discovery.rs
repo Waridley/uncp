@@ -12,7 +12,6 @@ use crate::memory::MemoryManager;
 use crate::systems::{yield_periodically, System, SystemContext, SystemProgress, SystemRunner};
 
 /// System for discovering files in the filesystem
-
 pub struct FileDiscoverySystem {
 	/// Optional progress callback (shared for TUI/GUI)
 	pub progress_callback: Option<std::sync::Arc<dyn Fn(SystemProgress) + Send + Sync>>,
@@ -241,7 +240,7 @@ impl FileDiscoverySystem {
 	fn determine_file_type(&self, path: &Path) -> FileKind {
 		// Use tree_magic_mini to determine MIME type
 		let mime = tree_magic_mini::from_filepath(path);
-		let mime_str: &str = mime.as_deref().unwrap_or("");
+		let mime_str: &str = mime.unwrap_or("");
 
 		match mime_str {
 			mime if mime.starts_with("text/") => FileKind::Text,

@@ -55,7 +55,7 @@ fn main() {
 
 async fn run(opts: Opts) -> anyhow::Result<()> {
 	match opts.command {
-		Command::Scan { path, hash } => {
+		Command::Scan { path, hash: _ } => {
 			let mut detector = DuplicateDetector::new(DetectorConfig::default())?;
 			let cache_path = default_cache_dir();
 			if let Some(dir) = &cache_path {
@@ -68,10 +68,10 @@ async fn run(opts: Opts) -> anyhow::Result<()> {
 			}
 
 			// Foreground CLI: run engine for parallel speedup, print progress to stderr, exit on completion
-			let (engine, mut events, cmds) = BackgroundEngine::start(detector);
+			let (_engine, events, cmds) = BackgroundEngine::start(detector);
 			let _ = cmds.send(EngineCommand::SetPath(path.clone())).await;
 			let _ = cmds.send(EngineCommand::Start).await;
-			use futures_lite::StreamExt;
+
 			let pref = path.to_string_lossy().to_string();
 			while let Ok(evt) = events.recv().await {
 				match evt {
@@ -95,7 +95,7 @@ async fn run(opts: Opts) -> anyhow::Result<()> {
 			if let Some(dir) = default_cache_dir() {
 				// Re-load so we have a detector for printing
 				let mut det = DuplicateDetector::new(DetectorConfig::default())?;
-				if det.load_cache_all(dir.clone())? {}
+				det.load_cache_all(dir.clone())?;
 				print_summary(&det);
 			}
 		}
