@@ -8,7 +8,7 @@ use std::fs::{self, File};
 use std::path::PathBuf;
 
 use crate::data::{RelationStore, ScanState};
-use crate::error::CacheResult;
+use crate::error::{CacheError, CacheResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanMetadata {
@@ -49,7 +49,13 @@ impl CacheManager {
 		Ok(())
 	}
 
+	/// Save state and relations, merging with existing cache data
 	pub fn save_all(&self, state: &ScanState, relations: &RelationStore) -> CacheResult<()> {
+		self.save_merged(state, relations)
+	}
+
+	/// Save state and relations, completely replacing existing cache data
+	pub fn save_replace(&self, state: &ScanState, relations: &RelationStore) -> CacheResult<()> {
 		self.ensure_dir()?;
 
 		// Helper: write to temp file and atomically rename into place (cross-platform)
@@ -133,6 +139,34 @@ impl CacheManager {
 		Ok(())
 	}
 
+	/// Save state and relations, merging with existing cache data
+	pub fn save_merged(&self, state: &ScanState, relations: &RelationStore) -> CacheResult<()> {
+		self.ensure_dir()?;
+
+		// Load existing cache if it exists
+		let (merged_state, merged_relations) =
+			if let Some((mut existing_state, mut existing_relations)) = self.load_all()? {
+				// Merge new data with existing data
+				existing_state
+					.merge_with(state)
+					.map_err(|e| CacheError::InvalidationFailed {
+						reason: format!("Failed to merge scan states: {}", e),
+					})?;
+				existing_relations.merge_with(relations).map_err(|e| {
+					CacheError::InvalidationFailed {
+						reason: format!("Failed to merge relation stores: {}", e),
+					}
+				})?;
+				(existing_state, existing_relations)
+			} else {
+				// No existing cache, use new data as-is
+				(state.clone(), relations.clone())
+			};
+
+		// Save the merged data using the replace method
+		self.save_replace(&merged_state, &merged_relations)
+	}
+
 	pub fn load_all(&self) -> CacheResult<Option<(ScanState, RelationStore)>> {
 		if !self.state_path().exists() || !self.meta_path().exists() {
 			return Ok(None);
@@ -181,5 +215,284 @@ impl CacheManager {
 
 	pub fn cache_exists(&self) -> bool {
 		self.state_path().exists() && self.meta_path().exists()
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::data::{FileKind, FileRecord};
+	use chrono::Utc;
+	use std::path::PathBuf;
+	use tempfile::TempDir;
+
+	fn create_test_state() -> ScanState {
+		let mut state = ScanState::new().unwrap();
+		let files = vec![
+			FileRecord {
+				path: PathBuf::from("/test/file1.txt"),
+				size: 100,
+				modified: Utc::now(),
+				file_type: FileKind::Text,
+			},
+			FileRecord {
+				path: PathBuf::from("/test/file2.jpg"),
+				size: 200,
+				modified: Utc::now(),
+				file_type: FileKind::Image,
+			},
+		];
+		state.add_files(files).unwrap();
+		state
+	}
+
+	#[test]
+	fn test_cache_manager_creation() {
+		let temp_dir = TempDir::new().unwrap();
+		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
+
+		assert_eq!(cache_manager.cache_dir, temp_dir.path());
+		assert!(!cache_manager.cache_exists());
+	}
+
+	#[test]
+	fn test_cache_paths() {
+		let temp_dir = TempDir::new().unwrap();
+		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
+
+		assert_eq!(cache_manager.meta_path(), temp_dir.path().join("meta.json"));
+		assert_eq!(
+			cache_manager.state_path(),
+			temp_dir.path().join("state.parquet")
+		);
+		assert_eq!(
+			cache_manager.rel_hashes_path(),
+			temp_dir.path().join("relations_hashes.parquet")
+		);
+		assert_eq!(
+			cache_manager.rel_groups_path(),
+			temp_dir.path().join("relations_groups.parquet")
+		);
+		assert_eq!(
+			cache_manager.rel_pairs_path(),
+			temp_dir.path().join("relations_pairs.parquet")
+		);
+	}
+
+	#[test]
+	fn test_ensure_dir() {
+		let temp_dir = TempDir::new().unwrap();
+		let cache_dir = temp_dir.path().join("cache");
+		let cache_manager = CacheManager::new(cache_dir.clone());
+
+		// Directory shouldn't exist initially
+		assert!(!cache_dir.exists());
+
+		// ensure_dir should create it
+		let result = cache_manager.ensure_dir();
+		assert!(result.is_ok());
+		assert!(cache_dir.exists());
+
+		// Calling again should be fine
+		let result = cache_manager.ensure_dir();
+		assert!(result.is_ok());
+	}
+
+	#[test]
+	fn test_save_and_load_all() {
+		let temp_dir = TempDir::new().unwrap();
+		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
+
+		let state = create_test_state();
+		let relations = RelationStore::new().unwrap();
+
+		// Save
+		let result = cache_manager.save_all(&state, &relations);
+		assert!(result.is_ok());
+
+		// Verify files were created
+		assert!(cache_manager.cache_exists());
+		assert!(cache_manager.meta_path().exists());
+		assert!(cache_manager.state_path().exists());
+
+		// Load
+		let result = cache_manager.load_all();
+		assert!(result.is_ok());
+
+		let loaded = result.unwrap();
+		assert!(loaded.is_some());
+
+		let (loaded_state, _loaded_relations) = loaded.unwrap();
+		assert_eq!(loaded_state.scan_id, state.scan_id);
+		assert_eq!(loaded_state.data.height(), state.data.height());
+	}
+
+	#[test]
+	fn test_load_nonexistent_cache() {
+		let temp_dir = TempDir::new().unwrap();
+		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
+
+		let result = cache_manager.load_all();
+		assert!(result.is_ok());
+
+		let loaded = result.unwrap();
+		assert!(loaded.is_none());
+	}
+
+	#[test]
+	fn test_scan_metadata_serialization() {
+		let metadata = ScanMetadata {
+			version: 1,
+			scan_id: 42,
+			last_scan_time: 1234567890,
+			file_count: 100,
+		};
+
+		let json = serde_json::to_string(&metadata).unwrap();
+		let deserialized: ScanMetadata = serde_json::from_str(&json).unwrap();
+
+		assert_eq!(deserialized.version, metadata.version);
+		assert_eq!(deserialized.scan_id, metadata.scan_id);
+		assert_eq!(deserialized.last_scan_time, metadata.last_scan_time);
+		assert_eq!(deserialized.file_count, metadata.file_count);
+	}
+
+	#[test]
+	fn test_cache_exists_partial() {
+		let temp_dir = TempDir::new().unwrap();
+		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
+
+		// No files exist
+		assert!(!cache_manager.cache_exists());
+
+		// Create only meta file
+		cache_manager.ensure_dir().unwrap();
+		std::fs::write(cache_manager.meta_path(), "{}").unwrap();
+		assert!(!cache_manager.cache_exists()); // Still false, need both files
+
+		// Create empty state file
+		std::fs::write(cache_manager.state_path(), "").unwrap();
+		assert!(cache_manager.cache_exists()); // Now true
+	}
+
+	#[test]
+	fn test_save_with_hashes() {
+		let temp_dir = TempDir::new().unwrap();
+		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
+
+		let mut state = create_test_state();
+
+		// Add some hashes
+		let paths = vec!["/test/file1.txt".to_string()];
+		let hashes = vec![Some("abc123".to_string())];
+		state.update_hashes(paths, hashes).unwrap();
+
+		let relations = RelationStore::new().unwrap();
+
+		// Save and load
+		cache_manager.save_all(&state, &relations).unwrap();
+		let (loaded_state, _) = cache_manager.load_all().unwrap().unwrap();
+
+		// Verify hash was preserved
+		let hash_col = loaded_state.data.column("blake3_hash").unwrap();
+		let first_hash = hash_col.get(0).unwrap();
+		let hash_str = first_hash.to_string();
+		assert!(hash_str.contains("abc123"));
+	}
+
+	#[test]
+	fn test_atomic_operations() {
+		let temp_dir = TempDir::new().unwrap();
+		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
+
+		let state = create_test_state();
+		let relations = RelationStore::new().unwrap();
+
+		// Save multiple times to test atomic operations
+		for i in 0..3 {
+			let mut test_state = state.clone();
+			test_state.scan_id = i + 1;
+
+			let result = cache_manager.save_all(&test_state, &relations);
+			assert!(result.is_ok());
+
+			// Verify we can load after each save
+			let loaded = cache_manager.load_all().unwrap().unwrap();
+			assert_eq!(loaded.0.scan_id, i + 1);
+		}
+	}
+
+	#[test]
+	fn test_metadata_timestamp() {
+		let temp_dir = TempDir::new().unwrap();
+		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
+
+		let state = create_test_state();
+		let relations = RelationStore::new().unwrap();
+
+		let before_save = Utc::now().timestamp_millis();
+		cache_manager.save_all(&state, &relations).unwrap();
+		let after_save = Utc::now().timestamp_millis();
+
+		// Load metadata directly
+		let meta_bytes = std::fs::read(cache_manager.meta_path()).unwrap();
+		let meta: ScanMetadata = serde_json::from_slice(&meta_bytes).unwrap();
+
+		// Timestamp should be between before and after save
+		assert!(meta.last_scan_time >= before_save);
+		assert!(meta.last_scan_time <= after_save);
+	}
+
+	#[test]
+	fn test_cache_merging() {
+		let temp_dir = TempDir::new().unwrap();
+		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
+
+		// Create first state with some files
+		let state1 = create_test_state();
+		let relations1 = RelationStore::new().unwrap();
+
+		// Save first state
+		cache_manager.save_all(&state1, &relations1).unwrap();
+
+		// Create second state with different files
+		let mut state2 = ScanState::new().unwrap();
+		let files2 = vec![
+			FileRecord {
+				path: PathBuf::from("/test/file3.txt"),
+				size: 300,
+				modified: Utc::now(),
+				file_type: FileKind::Text,
+			},
+			FileRecord {
+				path: PathBuf::from("/test/file4.txt"),
+				size: 400,
+				modified: Utc::now(),
+				file_type: FileKind::Text,
+			},
+		];
+		state2.add_files(files2).unwrap();
+		let relations2 = RelationStore::new().unwrap();
+
+		// Save second state (should merge with first)
+		cache_manager.save_all(&state2, &relations2).unwrap();
+
+		// Load and verify both sets of files are present
+		let (merged_state, _merged_relations) = cache_manager.load_all().unwrap().unwrap();
+
+		// Should have files from both states
+		assert_eq!(merged_state.data.height(), 4); // 2 from state1 + 2 from state2
+
+		// Verify all file paths are present
+		let path_col = merged_state.data.column("path").unwrap();
+		let paths: Vec<String> = path_col
+			.iter()
+			.map(|v| v.to_string().trim_matches('"').to_string())
+			.collect();
+
+		assert!(paths.contains(&"/test/file1.txt".to_string()));
+		assert!(paths.contains(&"/test/file2.jpg".to_string()));
+		assert!(paths.contains(&"/test/file3.txt".to_string()));
+		assert!(paths.contains(&"/test/file4.txt".to_string()));
 	}
 }

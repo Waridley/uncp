@@ -177,3 +177,59 @@ impl System for ContentHashSystem {
 		"Computes content hashes (exact blake3) for files (PoC)"
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::data::ScanState;
+	use crate::memory::MemoryManager;
+
+	#[test]
+	fn test_content_hash_system_creation() {
+		let hash_system = ContentHashSystem::new();
+
+		assert_eq!(hash_system.name(), "ContentHash");
+		assert_eq!(hash_system.priority(), 200);
+		assert_eq!(hash_system.required_columns(), &["path"]);
+		assert_eq!(hash_system.optional_columns(), &[] as &[&str]);
+		assert!(hash_system.can_run(&ScanState::new().unwrap()));
+	}
+
+	#[test]
+	fn test_blake3_hash_consistency() {
+		let content = b"test content for hashing";
+		let hash1 = blake3::hash(content);
+		let hash2 = blake3::hash(content);
+
+		// Same content should produce same hash
+		assert_eq!(hash1.to_hex(), hash2.to_hex());
+
+		// Different content should produce different hash
+		let different_content = b"different test content";
+		let hash3 = blake3::hash(different_content);
+		assert_ne!(hash1.to_hex(), hash3.to_hex());
+	}
+
+	#[smol_potat::test]
+	async fn test_hash_system_empty_state() {
+		let hash_system = ContentHashSystem::new();
+		let mut state = ScanState::new().unwrap();
+		let mut memory_mgr = MemoryManager::new().unwrap();
+
+		// Should handle empty state gracefully
+		let result = hash_system.run(&mut state, &mut memory_mgr).await;
+		assert!(result.is_ok());
+		assert_eq!(state.data.height(), 0);
+	}
+
+	#[test]
+	fn test_system_interface() {
+		let hash_system = ContentHashSystem::new();
+
+		assert_eq!(
+			hash_system.description(),
+			"Computes content hashes (exact blake3) for files (PoC)"
+		);
+		assert!(hash_system.can_run(&ScanState::new().unwrap()));
+	}
+}

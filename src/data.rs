@@ -180,6 +180,86 @@ impl ScanState {
 		let _ = (paths, flag, value);
 		Ok(())
 	}
+
+	/// Update hashes for files (for testing)
+	pub fn update_hashes(
+		&mut self,
+		paths: Vec<String>,
+		hashes: Vec<Option<String>>,
+	) -> DetectorResult<()> {
+		if paths.len() != hashes.len() {
+			return Err(DetectorError::Config(
+				"Paths and hashes length mismatch".to_string(),
+			));
+		}
+
+		let paths_len = paths.len();
+
+		// Create update frame
+		let update_df = df! {
+			"path" => paths,
+			"blake3_hash" => hashes,
+			"hashed" => vec![true; paths_len],
+		}
+		.map_err(DetectorError::Polars)?;
+
+		// Merge updates into state using a left join and coalesce
+		let updated = self
+			.data
+			.clone()
+			.lazy()
+			.left_join(update_df.clone().lazy(), col("path"), col("path"))
+			.with_columns([
+				when(col("blake3_hash_right").is_not_null())
+					.then(col("blake3_hash_right"))
+					.otherwise(col("blake3_hash"))
+					.alias("blake3_hash"),
+				when(col("hashed_right").is_not_null())
+					.then(col("hashed_right"))
+					.otherwise(col("hashed"))
+					.alias("hashed"),
+			])
+			.select([all().exclude(["blake3_hash_right", "hashed_right"])])
+			.collect()
+			.map_err(DetectorError::Polars)?;
+
+		self.data = updated;
+		Ok(())
+	}
+
+	/// Merge another scan state into this one, combining file data
+	/// Files from the other state will be added, with existing files being updated
+	pub fn merge_with(&mut self, other: &ScanState) -> DetectorResult<()> {
+		if other.data.height() == 0 {
+			return Ok(()); // Nothing to merge
+		}
+
+		if self.data.height() == 0 {
+			// If current state is empty, just copy the other state
+			self.data = other.data.clone();
+			self.scan_id = other.scan_id;
+			self.scan_started = other.scan_started;
+			return Ok(());
+		}
+
+		// Combine the DataFrames, with new data taking precedence for duplicates
+		use polars::prelude::concat;
+		let combined = concat(
+			[other.data.clone().lazy(), self.data.clone().lazy()],
+			UnionArgs::default(),
+		)
+		.map_err(DetectorError::Polars)?
+		.unique(Some(vec!["path".to_string()]), UniqueKeepStrategy::First)
+		.collect()
+		.map_err(DetectorError::Polars)?;
+
+		self.data = combined;
+		// Update metadata to reflect the merge
+		self.scan_id = self.scan_id.max(other.scan_id);
+		self.scan_started = self.scan_started.min(other.scan_started);
+
+		Ok(())
+	}
 }
 
 impl Default for ScanState {
@@ -251,6 +331,73 @@ impl RelationStore {
 			"computed_at" => Vec::<i64>::new(),
 		}
 	}
+
+	/// Merge another relation store into this one, combining relationship data
+	pub fn merge_with(&mut self, other: &RelationStore) -> DetectorResult<()> {
+		use polars::prelude::concat;
+
+		// Merge hash relations
+		if other.hash_relations.height() > 0 {
+			if self.hash_relations.height() == 0 {
+				self.hash_relations = other.hash_relations.clone();
+			} else {
+				let combined = concat(
+					[
+						other.hash_relations.clone().lazy(),
+						self.hash_relations.clone().lazy(),
+					],
+					UnionArgs::default(),
+				)
+				.map_err(DetectorError::Polars)?
+				.unique(None, UniqueKeepStrategy::First)
+				.collect()
+				.map_err(DetectorError::Polars)?;
+				self.hash_relations = combined;
+			}
+		}
+
+		// Merge similarity groups
+		if other.similarity_groups.height() > 0 {
+			if self.similarity_groups.height() == 0 {
+				self.similarity_groups = other.similarity_groups.clone();
+			} else {
+				let combined = concat(
+					[
+						other.similarity_groups.clone().lazy(),
+						self.similarity_groups.clone().lazy(),
+					],
+					UnionArgs::default(),
+				)
+				.map_err(DetectorError::Polars)?
+				.unique(None, UniqueKeepStrategy::First)
+				.collect()
+				.map_err(DetectorError::Polars)?;
+				self.similarity_groups = combined;
+			}
+		}
+
+		// Merge pairwise relations
+		if other.pairwise_relations.height() > 0 {
+			if self.pairwise_relations.height() == 0 {
+				self.pairwise_relations = other.pairwise_relations.clone();
+			} else {
+				let combined = concat(
+					[
+						other.pairwise_relations.clone().lazy(),
+						self.pairwise_relations.clone().lazy(),
+					],
+					UnionArgs::default(),
+				)
+				.map_err(DetectorError::Polars)?
+				.unique(None, UniqueKeepStrategy::First)
+				.collect()
+				.map_err(DetectorError::Polars)?;
+				self.pairwise_relations = combined;
+			}
+		}
+
+		Ok(())
+	}
 }
 
 impl Default for RelationStore {
@@ -286,4 +433,100 @@ pub struct FileRelationships {
 	pub exact_duplicates: Vec<PathBuf>,
 	pub similar_files: Vec<(PathBuf, f64)>, // (path, similarity_score)
 	pub groups: Vec<Uuid>,
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use chrono::Utc;
+	use std::path::PathBuf;
+
+	fn create_test_file_record(path: &str, size: u64) -> FileRecord {
+		FileRecord {
+			path: PathBuf::from(path),
+			size,
+			modified: Utc::now(),
+			file_type: FileKind::Text,
+		}
+	}
+
+	#[test]
+	fn test_file_kind_display() {
+		assert_eq!(FileKind::Text.to_string(), "text");
+		assert_eq!(FileKind::Image.to_string(), "image");
+		assert_eq!(FileKind::Audio.to_string(), "audio");
+		assert_eq!(FileKind::Video.to_string(), "video");
+		assert_eq!(FileKind::Archive.to_string(), "archive");
+		assert_eq!(FileKind::Binary.to_string(), "binary");
+		assert_eq!(FileKind::Unknown.to_string(), "unknown");
+	}
+
+	#[test]
+	fn test_scan_state_creation() {
+		let state = ScanState::new().unwrap();
+		assert_eq!(state.scan_id, 1);
+		assert_eq!(state.data.height(), 0);
+		assert!(state.scan_started <= Utc::now());
+	}
+
+	#[test]
+	fn test_add_files() {
+		let mut state = ScanState::new().unwrap();
+		let files = vec![
+			create_test_file_record("/test/file1.txt", 100),
+			create_test_file_record("/test/file2.txt", 200),
+		];
+
+		let result = state.add_files(files);
+		assert!(result.is_ok());
+		assert_eq!(state.data.height(), 2);
+	}
+
+	#[test]
+	fn test_data_frame_operations() {
+		let mut state = ScanState::new().unwrap();
+		assert_eq!(state.data.height(), 0);
+
+		let files = vec![
+			create_test_file_record("/test/file1.txt", 100),
+			create_test_file_record("/test/file2.txt", 200),
+		];
+		state.add_files(files).unwrap();
+		assert_eq!(state.data.height(), 2);
+
+		// Test that we can access columns
+		assert!(state.data.column("path").is_ok());
+		assert!(state.data.column("size").is_ok());
+		assert!(state.data.column("modified").is_ok());
+		assert!(state.data.column("file_type").is_ok());
+	}
+
+	#[test]
+	fn test_update_hashes() {
+		let mut state = ScanState::new().unwrap();
+		let files = vec![
+			create_test_file_record("/test/file1.txt", 100),
+			create_test_file_record("/test/file2.txt", 200),
+		];
+		state.add_files(files).unwrap();
+
+		let paths = vec!["/test/file1.txt".to_string()];
+		let hashes = vec![Some("abc123".to_string())];
+
+		let result = state.update_hashes(paths, hashes);
+		assert!(result.is_ok());
+
+		// Verify the hash was updated
+		let df = &state.data;
+		let hash_col = df.column("blake3_hash").unwrap();
+		let first_hash = hash_col.get(0).unwrap();
+		let hash_str = first_hash.to_string();
+		assert!(hash_str.contains("abc123"));
+	}
+
+	#[test]
+	fn test_relation_store_creation() {
+		let store = RelationStore::new();
+		assert!(store.is_ok());
+	}
 }

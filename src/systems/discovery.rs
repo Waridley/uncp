@@ -320,3 +320,74 @@ impl System for FileDiscoverySystem {
 		"Discovers files in the filesystem and populates initial metadata"
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::data::ScanState;
+	use crate::memory::MemoryManager;
+	use std::fs;
+	use tempfile::TempDir;
+
+	fn create_test_directory() -> TempDir {
+		let temp_dir = TempDir::new().unwrap();
+		let base_path = temp_dir.path();
+
+		// Create test files
+		fs::write(base_path.join("test.txt"), "Hello, world!").unwrap();
+		fs::write(base_path.join("image.jpg"), b"fake image data").unwrap();
+		fs::write(base_path.join("data.bin"), b"\x00\x01\x02\x03").unwrap();
+
+		// Create subdirectory with files
+		let sub_dir = base_path.join("subdir");
+		fs::create_dir(&sub_dir).unwrap();
+		fs::write(sub_dir.join("nested.txt"), "nested content").unwrap();
+
+		temp_dir
+	}
+
+	#[test]
+	fn test_file_discovery_system_creation() {
+		let paths = vec![PathBuf::from("/test/path")];
+		let discovery = FileDiscoverySystem::new(paths.clone());
+
+		assert_eq!(discovery.scan_paths, paths);
+		assert_eq!(discovery.name(), "FileDiscovery");
+		assert_eq!(discovery.priority(), 255);
+		assert!(discovery.can_run(&ScanState::new().unwrap()));
+	}
+
+	#[smol_potat::test]
+	async fn test_file_discovery_run() {
+		let temp_dir = create_test_directory();
+		let discovery = FileDiscoverySystem::new(vec![temp_dir.path().to_path_buf()]);
+
+		let mut state = ScanState::new().unwrap();
+		let mut memory_mgr = MemoryManager::new().unwrap();
+
+		let result = discovery.run(&mut state, &mut memory_mgr).await;
+		assert!(result.is_ok());
+
+		// Should have discovered files
+		assert!(state.data.height() > 0);
+
+		// Check that files were added with correct metadata
+		let df = &state.data;
+		assert!(df.column("path").is_ok());
+		assert!(df.column("size").is_ok());
+		assert!(df.column("modified").is_ok());
+		assert!(df.column("file_type").is_ok());
+	}
+
+	#[test]
+	fn test_system_interface() {
+		let discovery = FileDiscoverySystem::new(vec![PathBuf::from("/test")]);
+
+		assert_eq!(discovery.required_columns(), &[] as &[&str]);
+		assert_eq!(discovery.optional_columns(), &[] as &[&str]);
+		assert_eq!(
+			discovery.description(),
+			"Discovers files in the filesystem and populates initial metadata"
+		);
+	}
+}

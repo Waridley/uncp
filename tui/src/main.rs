@@ -50,16 +50,13 @@ fn main() -> std::io::Result<()> {
 		.map(|n| n.get())
 		.unwrap_or(4)
 		.max(2);
-	let ex_ref = &ex;
 
 	// Run executor worker threads and the TUI on the current thread
 	Parallel::new()
-		.each(0..nthreads, |_| {
-			future::block_on(ex_ref.run(shutdown.recv()))
-		})
+		.each(0..nthreads, |_| future::block_on(ex.run(shutdown.recv())))
 		.finish(|| {
 			let mut terminal = ratatui::init();
-			let _ = run(ex_ref, &mut terminal);
+			let _ = run(&ex, &mut terminal);
 			ratatui::restore();
 
 			// Stop executor threads

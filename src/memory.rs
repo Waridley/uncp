@@ -234,3 +234,51 @@ impl std::fmt::Display for CacheStats {
 		)
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_memory_manager_creation() {
+		let manager = MemoryManager::new();
+		assert!(manager.is_ok());
+	}
+
+	#[test]
+	fn test_settings_from_sysinfo() {
+		let settings = Settings::from_sysinfo();
+		assert!(settings.is_ok());
+
+		let settings = settings.unwrap();
+		assert!(settings.max_total_loaded_bytes > 0);
+		assert!(settings.num_max_loaded_files > 0);
+
+		// Should have reasonable defaults
+		assert!(settings.max_total_loaded_bytes >= 100 * 1024 * 1024); // At least 100MB
+		assert!(settings.num_max_loaded_files >= 4); // At least 4 files
+	}
+
+	#[test]
+	fn test_settings_custom() {
+		let settings = Settings::new(1024 * 1024, 10); // 1MB, 10 files
+		assert_eq!(settings.max_total_loaded_bytes, 1024 * 1024);
+		assert_eq!(settings.num_max_loaded_files, 10);
+	}
+
+	#[test]
+	fn test_cache_stats_display() {
+		let stats = CacheStats {
+			current_files: 5,
+			max_files: 10,
+			current_bytes: 1024 * 1024, // 1MB
+			max_bytes: 2 * 1024 * 1024, // 2MB
+			hit_ratio: 0.75,
+		};
+
+		let display = stats.to_string();
+		assert!(display.contains("5/10 files"));
+		assert!(display.contains("1.0MB/2.0MB"));
+		assert!(display.contains("75.0% hit ratio"));
+	}
+}

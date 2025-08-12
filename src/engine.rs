@@ -250,7 +250,10 @@ impl BackgroundEngine {
 						let _ = evt_tx.send(EngineEvent::SnapshotReady(snap)).await;
 
 						// Throttled autosave: every ~5s to avoid blocking frequently
-						if last_save.elapsed() >= std::time::Duration::from_secs(5) {
+						// Only attempt cache save if auto-cache is enabled (avoids filesystem access in tests)
+						if last_save.elapsed() >= std::time::Duration::from_secs(5)
+							&& !detector.config.disable_auto_cache
+						{
 							if let Some(dir) = default_cache_dir() {
 								let _ = evt_tx.send(EngineEvent::CacheSaving).await;
 								// Save cache synchronously but quickly
@@ -304,7 +307,8 @@ mod tests {
 			// Create a test file
 			std::fs::write(test_path.join("test.txt"), "hello world").unwrap();
 
-			let detector = crate::DuplicateDetector::new(crate::DetectorConfig::default()).unwrap();
+			let detector =
+				crate::DuplicateDetector::new(crate::DetectorConfig::for_testing()).unwrap();
 			let (_engine, events, cmds) = BackgroundEngine::start(detector);
 
 			// Send commands
@@ -363,6 +367,20 @@ mod tests {
 			);
 
 			println!("Test completed: {} snapshots received", snapshots_received);
+		});
+	}
+
+	#[test]
+	fn test_background_engine_creation() {
+		smol::block_on(async {
+			let _temp_dir = tempfile::TempDir::new().unwrap();
+			let config = crate::DetectorConfig::for_testing();
+			let detector = DuplicateDetector::new(config).unwrap();
+
+			let (_engine, _events, _commands) = BackgroundEngine::start(detector);
+
+			// Engine should start successfully
+			// We don't test much here since the engine runs in background
 		});
 	}
 }

@@ -62,3 +62,4 @@ futures-lite = "2"
 
 [dev-dependencies]
 tempfile = "3.8"
+smol-potat = "1.1"

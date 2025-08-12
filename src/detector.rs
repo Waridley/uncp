@@ -16,12 +16,26 @@ use tracing::info;
 #[derive(Debug)]
 pub struct DetectorConfig {
 	pub memory_settings: Settings,
+	/// Disable automatic cache saving (useful for tests)
+	pub disable_auto_cache: bool,
 }
 
 impl Default for DetectorConfig {
 	fn default() -> Self {
 		Self {
 			memory_settings: Settings::from_sysinfo().expect("failed to read sysinfo"),
+			disable_auto_cache: false,
+		}
+	}
+}
+
+impl DetectorConfig {
+	/// Create a test configuration that disables automatic cache saving
+	#[cfg(test)]
+	pub fn for_testing() -> Self {
+		Self {
+			memory_settings: Settings::from_sysinfo().expect("failed to read sysinfo"),
+			disable_auto_cache: true,
 		}
 	}
 }
@@ -31,15 +45,18 @@ pub struct DuplicateDetector {
 	pub relations: RelationStore,
 	pub scheduler: SystemScheduler,
 	pub memory_mgr: MemoryManager,
+	pub config: DetectorConfig,
 }
 
 impl DuplicateDetector {
 	pub fn new(config: DetectorConfig) -> DetectorResult<Self> {
+		let memory_settings = config.memory_settings.clone();
 		Ok(Self {
 			state: ScanState::new()?,
 			relations: RelationStore::new()?,
 			scheduler: SystemScheduler::new(),
-			memory_mgr: MemoryManager::with_settings(config.memory_settings)?,
+			memory_mgr: MemoryManager::with_settings(memory_settings)?,
+			config,
 		})
 	}
 
@@ -56,6 +73,18 @@ impl DuplicateDetector {
 		Ok(this)
 	}
 
+	/// Create a detector with cache loading from a specific directory (for testing)
+	#[cfg(test)]
+	pub fn new_with_cache_dir(config: DetectorConfig, cache_dir: PathBuf) -> DetectorResult<Self> {
+		let mut this = Self::new(config)?;
+		// Try loading cache from specified directory (best-effort)
+		if let Ok(Some((state, relations))) = CacheManager::new(cache_dir).load_all() {
+			this.state = state;
+			this.relations = relations;
+		}
+		Ok(this)
+	}
+
 	pub async fn scan_directory(&mut self, path: PathBuf) -> DetectorResult<()> {
 		info!("Detector: scan_directory {}", path.display());
 		let discovery = FileDiscoverySystem::new(vec![path]);
@@ -65,7 +94,7 @@ impl DuplicateDetector {
 			.run_all(&mut self.state, &mut self.memory_mgr)
 			.await
 			.map_err(DetectorError::from);
-		if res.is_ok() {
+		if res.is_ok() && !self.config.disable_auto_cache {
 			if let Some(dir) = default_cache_dir() {
 				let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
 			}
@@ -89,7 +118,7 @@ impl DuplicateDetector {
 			.run_all(&mut self.state, &mut self.memory_mgr)
 			.await
 			.map_err(DetectorError::from);
-		if res.is_ok() {
+		if res.is_ok() && !self.config.disable_auto_cache {
 			if let Some(dir) = default_cache_dir() {
 				let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
 			}
@@ -110,7 +139,7 @@ impl DuplicateDetector {
 			.run_all(&mut self.state, &mut self.memory_mgr)
 			.await
 			.map_err(DetectorError::from);
-		if res.is_ok() {
+		if res.is_ok() && !self.config.disable_auto_cache {
 			if let Some(dir) = default_cache_dir() {
 				let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
 			}
@@ -133,7 +162,7 @@ impl DuplicateDetector {
 			.run_all(&mut self.state, &mut self.memory_mgr)
 			.await
 			.map_err(DetectorError::from);
-		if res.is_ok() {
+		if res.is_ok() && !self.config.disable_auto_cache {
 			if let Some(dir) = default_cache_dir() {
 				let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
 			}
@@ -147,7 +176,7 @@ impl DuplicateDetector {
 			.run_all(&mut self.state, &mut self.memory_mgr)
 			.await
 			.map_err(DetectorError::from);
-		if res.is_ok() {
+		if res.is_ok() && !self.config.disable_auto_cache {
 			if let Some(dir) = default_cache_dir() {
 				let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
 			}
@@ -158,6 +187,14 @@ impl DuplicateDetector {
 	pub fn save_cache_all(&self, dir: PathBuf) -> DetectorResult<()> {
 		CacheManager::new(dir).save_all(&self.state, &self.relations)?;
 		Ok(())
+	}
+
+	/// Save cache only if auto-cache is enabled (respects disable_auto_cache flag)
+	pub fn save_cache_if_enabled(&self, dir: PathBuf) -> DetectorResult<()> {
+		if self.config.disable_auto_cache {
+			return Ok(()); // Silently skip cache save for test configurations
+		}
+		self.save_cache_all(dir)
 	}
 
 	pub fn load_cache_all(&mut self, dir: PathBuf) -> DetectorResult<bool> {
@@ -338,5 +375,118 @@ impl DuplicateDetector {
 			}
 		}
 		map
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use tempfile::TempDir;
+
+	#[test]
+	fn test_detector_config_default() {
+		let config = DetectorConfig::default();
+		assert!(config.memory_settings.max_total_loaded_bytes > 0);
+		assert!(config.memory_settings.num_max_loaded_files > 0);
+		assert!(!config.disable_auto_cache); // Default should allow auto cache
+	}
+
+	#[test]
+	fn test_detector_config_for_testing() {
+		let config = DetectorConfig::for_testing();
+		assert!(config.memory_settings.max_total_loaded_bytes > 0);
+		assert!(config.memory_settings.num_max_loaded_files > 0);
+		assert!(config.disable_auto_cache); // Test config should disable auto cache
+	}
+
+	#[test]
+	fn test_detector_creation() {
+		let config = DetectorConfig::for_testing();
+		let detector = DuplicateDetector::new(config);
+		assert!(detector.is_ok());
+
+		let detector = detector.unwrap();
+		assert_eq!(detector.state.data.height(), 0);
+	}
+
+	#[test]
+	fn test_detector_with_cache() {
+		// Test the basic detector creation without touching real cache
+		// We avoid calling new_with_cache() in tests since it tries to load from real cache
+		let config = DetectorConfig::for_testing();
+
+		// Create a detector normally and verify it works
+		let detector = DuplicateDetector::new(config);
+		assert!(detector.is_ok());
+
+		let detector = detector.unwrap();
+		// Note: detector might have default scan_id of 1, so we just check it's created
+		assert!(detector.state.scan_id >= 1);
+
+		// Test that the config is properly set to disable auto cache
+		assert!(detector.config.disable_auto_cache);
+	}
+
+	#[test]
+	fn test_detector_with_safe_cache_dir() {
+		// Test cache functionality using a temporary directory
+		let temp_dir = TempDir::new().unwrap();
+		let cache_dir = temp_dir.path().join("cache");
+
+		let config = DetectorConfig::for_testing();
+
+		// Test creating detector with non-existent cache directory
+		let detector = DuplicateDetector::new_with_cache_dir(config, cache_dir);
+		assert!(detector.is_ok());
+
+		let detector = detector.unwrap();
+		assert!(detector.config.disable_auto_cache);
+		assert_eq!(detector.state.data.height(), 0);
+	}
+
+	#[test]
+	fn test_cache_operations() {
+		let temp_dir = TempDir::new().unwrap();
+		let cache_dir = temp_dir.path().join("cache");
+
+		let config = DetectorConfig::for_testing();
+		let mut detector = DuplicateDetector::new(config).unwrap();
+
+		// Initially no cache
+		let loaded = detector.load_cache_all(cache_dir.clone()).unwrap();
+		assert!(!loaded);
+
+		// Save empty cache
+		let result = detector.save_cache_all(cache_dir.clone());
+		assert!(result.is_ok());
+
+		// Load cache back
+		let loaded = detector.load_cache_all(cache_dir).unwrap();
+		assert!(loaded);
+	}
+
+	#[test]
+	fn test_query_interface() {
+		let config = DetectorConfig::for_testing();
+		let detector = DuplicateDetector::new(config).unwrap();
+
+		let _query = detector.query();
+		// Query should be created successfully
+		// We don't test query functionality here as it's tested separately
+	}
+
+	#[test]
+	fn test_clear_state() {
+		let config = DetectorConfig::for_testing();
+		let mut detector = DuplicateDetector::new(config).unwrap();
+
+		// Add some dummy data to state
+		detector.state.scan_id = 42;
+
+		detector.clear_state();
+
+		// State should be reset
+		assert_eq!(detector.state.scan_id, 1); // New state starts with scan_id 1
+		assert_eq!(detector.state.data.height(), 0);
 	}
 }
