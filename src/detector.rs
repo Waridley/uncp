@@ -201,6 +201,19 @@ impl DuplicateDetector {
 			.map(|df| df.height())
 			.unwrap_or(0)
 	}
+
+	pub fn files_under_prefix<S: AsRef<str>>(&self, prefix: S) -> usize {
+		use polars::prelude::*;
+		let pref = prefix.as_ref();
+		self.state
+			.data
+			.clone()
+			.lazy()
+			.filter(col("path").str().starts_with(lit(pref)))
+			.collect()
+			.map(|df| df.height())
+			.unwrap_or(0)
+	}
 	pub fn files_by_type_counts(&self) -> std::collections::HashMap<String, usize> {
 		let mut map = std::collections::HashMap::new();
 		if let Ok(s) = self.state.data.column("file_type") {

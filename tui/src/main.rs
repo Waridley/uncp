@@ -370,20 +370,14 @@ fn draw_enhanced(
 	let pending_files = pres.pending_hash;
 	let discovered_files = total_files;
 
-	// Discovery line - show current state
-	let mut disc_line = if let Some(ref disc) = discovery_progress {
-		// Use progress event data if available
-		let percentage = if disc.total_items > 0 {
-			(disc.processed_items as f64 / disc.total_items as f64 * 100.0) as u32
-		} else {
-			0
-		};
-		let mut line = format!("Discovery: {}/{} ({}%)",
-			disc.processed_items, disc.total_items, percentage);
+	// Discovery line - show just count and current file path
+	let disc_line = if let Some(ref disc) = discovery_progress {
+		// Use progress event data if available - show current file being discovered
+		let mut line = format!("Discovery: {} files", disc.processed_items);
 		if let Some(ref current) = disc.current_item {
 			// Truncate long paths for display
-			let display_path = if current.len() > 50 {
-				format!("...{}", &current[current.len()-47..])
+			let display_path = if current.len() > 60 {
+				format!("...{}", &current[current.len()-57..])
 			} else {
 				current.clone()
 			};
@@ -393,10 +387,9 @@ fn draw_enhanced(
 	} else {
 		// Show current detector state when no progress events
 		if discovered_files == 0 {
-			"Discovery: 0/0 (0%) - No files discovered yet".to_string()
+			"Discovery: 0 files - No files discovered yet".to_string()
 		} else {
-			format!("Discovery: {}/{} (100%) - {} files discovered",
-				discovered_files, discovered_files, discovered_files)
+			format!("Discovery: {} files - Discovery completed", discovered_files)
 		}
 	};
 	status_lines.push(Line::from(Span::raw(disc_line)));

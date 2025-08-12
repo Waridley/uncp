@@ -104,14 +104,9 @@ impl BackgroundEngine {
 						let pending_hash_count = detector.files_pending_hash();
 						let total_files = detector.total_files();
 
-						// Simple heuristic: if we have very few files compared to what we expect,
-						// we probably need more discovery. If we have files but many pending hash, we need hashing.
-						let needs_discovery = if let Some(ref _p) = current_path {
-							// If we have a path set but very few files, we likely need discovery
-							total_files < 10 // Simple heuristic - could be improved
-						} else {
-							false
-						};
+						// Always run discovery when a path is set and scan is requested
+						// This ensures users see immediate progress when they request a scan
+						let needs_discovery = current_path.is_some();
 
 						let needs_hashing = pending_hash_count > 0;
 
