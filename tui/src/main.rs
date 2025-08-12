@@ -183,15 +183,20 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 		while let Ok(evt) = evt_rx.try_recv() {
 			match evt {
 				EngineEvent::SnapshotReady(snap) => {
+					debug!("TUI: Received snapshot with {} files, {} pending hash", snap.total_files, snap.pending_hash);
 					pres = snap;
 				}
 				EngineEvent::Started => {
+					debug!("TUI: Engine started");
 					pres = pres.clone().with_status("Engine started");
 				}
 				EngineEvent::Completed => {
+					debug!("TUI: Engine completed");
 					pres = pres.clone().with_status("Engine completed");
 				}
-				_ => {}
+				_ => {
+					debug!("TUI: Received other engine event: {:?}", evt);
+				}
 			}
 		}
 
