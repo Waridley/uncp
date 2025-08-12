@@ -94,10 +94,17 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 	let mut spinner_idx: usize = 0;
 
 	// Start background engine and subscribe to events
-	// Note: Cache loading happens in DuplicateDetector::new() but it's fast enough for TUI startup
-	let (_engine, events, cmds) = BackgroundEngine::start(
-		uncp::DuplicateDetector::new(uncp::DetectorConfig::default()).expect("init detector"),
-	);
+	// Use non-blocking detector creation to avoid startup delay
+	let detector = uncp::DuplicateDetector::new(uncp::DetectorConfig::default()).expect("init detector");
+	let (_engine, events, cmds) = BackgroundEngine::start(detector);
+
+	// Load cache in background after TUI starts
+	let cmds_clone = cmds.clone();
+	smol::spawn(async move {
+		if let Some(dir) = uncp::paths::default_cache_dir() {
+			let _ = cmds_clone.send(uncp::engine::EngineCommand::LoadCache(dir)).await;
+		}
+	}).detach();
 	let evt_rx = events;
 	// Set initial path and start
 	let _ = cmds.try_send(EngineCommand::SetPath(current_path.clone()));

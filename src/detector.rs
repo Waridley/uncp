@@ -35,12 +35,16 @@ pub struct DuplicateDetector {
 
 impl DuplicateDetector {
 	pub fn new(config: DetectorConfig) -> DetectorResult<Self> {
-		let mut this = Self {
+		Ok(Self {
 			state: ScanState::new()?,
 			relations: RelationStore::new()?,
 			scheduler: SystemScheduler::new(),
 			memory_mgr: MemoryManager::with_settings(config.memory_settings)?,
-		};
+		})
+	}
+
+	pub fn new_with_cache(config: DetectorConfig) -> DetectorResult<Self> {
+		let mut this = Self::new(config)?;
 		// Try loading cache on creation (best-effort)
 		if let Some(dir) = default_cache_dir() {
 			if let Ok(Some((state, relations))) = CacheManager::new(dir).load_all() {

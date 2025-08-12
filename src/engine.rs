@@ -15,6 +15,7 @@ pub enum EngineCommand {
 	Start,
 	Pause,
 	Stop,
+	LoadCache(PathBuf),
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +76,18 @@ impl BackgroundEngine {
 								running = false;
 							}
 							EngineCommand::Stop => break,
+							EngineCommand::LoadCache(dir) => {
+								if let Ok(true) = detector.load_cache_all(dir) {
+									info!("Engine: loaded cache in background");
+									// Emit snapshot after loading cache
+									let mut snap = crate::ui::PresentationState::from_detector(&detector);
+									if let Some(ref p) = current_path {
+										let scoped = detector.files_pending_hash_under_prefix(p.to_string_lossy());
+										snap.pending_hash_scoped = Some(scoped);
+									}
+									let _ = evt_tx.send(EngineEvent::SnapshotReady(snap)).await;
+								}
+							}
 						}
 					}
 
@@ -96,6 +109,7 @@ impl BackgroundEngine {
 
 						if needs_discovery {
 							if let Some(p) = current_path.clone() {
+								info!("Engine: starting discovery for path {}", p.display());
 								// Emit initial discovery progress
 								let initial_progress = crate::systems::SystemProgress {
 									system_name: "Discovery".to_string(),
@@ -126,6 +140,7 @@ impl BackgroundEngine {
 								let _ = evt_tx.send(EngineEvent::DiscoveryProgress(final_progress)).await;
 							}
 						} else if needs_hashing {
+							info!("Engine: starting hashing for {} pending files", pending_hash_count);
 							// Emit initial hashing progress
 							let initial_progress = crate::systems::SystemProgress {
 								system_name: "Hashing".to_string(),
@@ -156,6 +171,7 @@ impl BackgroundEngine {
 							let _ = evt_tx.send(EngineEvent::HashingProgress(final_progress)).await;
 						} else {
 							// No work to do, emit completion event and pause
+							info!("Engine: no work to do (total_files={}, pending_hash={})", detector.total_files(), pending_hash_count);
 							let _ = evt_tx.send(EngineEvent::Completed).await;
 							running = false;
 						}
