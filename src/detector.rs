@@ -235,8 +235,8 @@ impl DuplicateDetector {
 
 		// Extract columns
 		let paths = df.column("path")?.str()?;
-		let cached_sizes = df.column("size")?.i64()?;
-		let cached_mtimes = df.column("modified_time")?.i64()?;
+		let cached_sizes = df.column("size")?.u64()?;  // size is u64 in schema
+		let cached_mtimes = df.column("modified")?.i64()?;  // column name is "modified", not "modified_time"
 		let hashed_flags = df.column("hashed")?.bool()?;
 
 		for (((path_opt, cached_size_opt), cached_mtime_opt), hashed_opt) in paths
@@ -253,13 +253,13 @@ impl DuplicateDetector {
 				// Check if file still exists
 				match fs::metadata(path) {
 					Ok(metadata) => {
-						let current_size = metadata.len() as i64;
+						let current_size = metadata.len(); // Keep as u64 to match schema
 						let current_mtime = metadata
 							.modified()
 							.unwrap_or(std::time::UNIX_EPOCH)
 							.duration_since(std::time::UNIX_EPOCH)
 							.unwrap_or_default()
-							.as_secs() as i64;
+							.as_nanos() as i64; // Convert to nanoseconds as per schema comment
 
 						// Keep the file
 						keep_mask.push(true);
