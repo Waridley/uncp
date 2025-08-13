@@ -11,10 +11,10 @@ use futures_lite::future;
 
 use crossterm::event::{self, Event, KeyCode};
 use ratatui::{
-	layout::{Constraint, Direction, Flex, Layout, Rect},
+	layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
 	style::{Color, Modifier, Style},
 	text::{Line, Span},
-	widgets::{Block, Borders, Clear, Paragraph, Table, Row, Cell, TableState},
+	widgets::{Block, Borders, Clear, Paragraph, Table, Row, Cell, TableState, Wrap},
 	Frame,
 };
 
@@ -86,6 +86,11 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 	// UI state
 	let mut current_path = PathBuf::from(".");
 	let mut in_path_input = false;
+	let mut in_filter_input = false;
+	let mut current_filter = uncp::PathFilter::default();
+	let mut filter_include_text = String::new(); // Multi-line text buffer for include patterns
+	let mut filter_exclude_text = String::new(); // Multi-line text buffer for exclude patterns
+	let mut filter_input_mode = FilterInputMode::Include; // Which column is active
 	debug!("TUI loop start");
 
 	let progress_state: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -133,7 +138,7 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 	let mut selected_idx: usize = 0;
 
 	loop {
-		for action in handle_events(in_path_input, &mut input_buffer)? {
+		for action in handle_events(in_path_input, in_filter_input, &mut input_buffer, &mut filter_include_text, &mut filter_exclude_text, &mut filter_input_mode)? {
 			match action {
 				Action::Quit => {
 					info!("Quitting...");
@@ -158,6 +163,36 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 						pres = pres.clone().with_status("Path input canceled");
 					}
 				}
+				Action::EnterFilterMode => {
+					info!("Entering filter mode");
+					in_filter_input = true;
+					filter_input_mode = FilterInputMode::Include;
+					// Initialize text buffers from current filter
+					filter_include_text = current_filter.include_patterns.join("\n");
+					filter_exclude_text = current_filter.exclude_patterns.join("\n");
+					input_buffer = String::new(); // Clear input buffer
+					pres = pres
+						.clone()
+						.with_status("Filter Manager: Tab to switch columns, type patterns (one per line), F10 to apply, Esc to cancel");
+				}
+				Action::CancelFilter => {
+					info!("Canceling filter input");
+					if in_filter_input {
+						in_filter_input = false;
+						filter_include_text.clear();
+						filter_exclude_text.clear();
+						input_buffer.clear();
+						pres = pres.clone().with_status("Filter input canceled");
+					}
+				}
+				Action::FilterSwitchColumn => {
+					if in_filter_input {
+						filter_input_mode = match filter_input_mode {
+							FilterInputMode::Include => FilterInputMode::Exclude,
+							FilterInputMode::Exclude => FilterInputMode::Include,
+						};
+					}
+				}
 
 				Action::SubmitPath => {
 					if in_path_input {
@@ -175,6 +210,63 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 						let _ = cmds.try_send(EngineCommand::ClearState);
 						let _ = cmds.try_send(EngineCommand::SetPath(current_path.clone()));
 						let _ = cmds.try_send(EngineCommand::Start);
+					}
+				}
+				Action::SubmitFilter => {
+					if in_filter_input {
+						// Parse patterns from text buffers (one pattern per line)
+						let include_patterns: Vec<String> = filter_include_text
+							.lines()
+							.map(|line| line.trim().to_string())
+							.filter(|line| !line.is_empty())
+							.collect();
+
+						let exclude_patterns: Vec<String> = filter_exclude_text
+							.lines()
+							.map(|line| line.trim().to_string())
+							.filter(|line| !line.is_empty())
+							.collect();
+
+						info!("Submitting filter with {} include, {} exclude patterns",
+							include_patterns.len(), exclude_patterns.len());
+
+						// Create new filter from the pattern lists
+						match uncp::PathFilter::new(include_patterns.clone(), exclude_patterns.clone()) {
+							Ok(new_filter) => {
+								current_filter = new_filter.clone();
+								in_filter_input = false;
+
+								let status_msg = if include_patterns.is_empty() && exclude_patterns.is_empty() {
+									"Filter cleared".to_string()
+								} else {
+									format!("Filter set: {} include, {} exclude patterns",
+										include_patterns.len(), exclude_patterns.len())
+								};
+								pres = pres.clone().with_status(status_msg);
+
+								// Apply filter to engine
+								if include_patterns.is_empty() && exclude_patterns.is_empty() {
+									let _ = cmds.try_send(EngineCommand::ClearPathFilter);
+								} else {
+									let _ = cmds.try_send(EngineCommand::SetPathFilter(new_filter));
+								}
+
+								// Restart scan with new filter
+								let _ = cmds.try_send(EngineCommand::Stop);
+								let _ = cmds.try_send(EngineCommand::ClearState);
+								let _ = cmds.try_send(EngineCommand::SetPath(current_path.clone()));
+								let _ = cmds.try_send(EngineCommand::Start);
+
+								// Clear temporary state
+								filter_include_text.clear();
+								filter_exclude_text.clear();
+								input_buffer.clear();
+							}
+							Err(e) => {
+								pres = pres.clone().with_status(format!("Invalid filter pattern: {}", e));
+								// Stay in filter input mode to allow correction
+							}
+						}
 					}
 				}
 
@@ -386,7 +478,12 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 				f,
 				&pres,
 				in_path_input,
+				in_filter_input,
 				&input_buffer,
+				&current_filter,
+				&filter_include_text,
+				&filter_exclude_text,
+				&filter_input_mode,
 				progress_display.as_deref(),
 				&engine_status,
 				&current_discovery_progress,
@@ -399,6 +496,12 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 }
 
 #[derive(Debug, Clone, Copy)]
+enum FilterInputMode {
+	Include,
+	Exclude,
+}
+
+#[derive(Debug, Clone, Copy)]
 enum Action {
 	Quit,
 	Refresh,
@@ -407,6 +510,10 @@ enum Action {
 	EnterPathMode,
 	CancelPath,
 	SubmitPath,
+	EnterFilterMode,
+	CancelFilter,
+	SubmitFilter,
+	FilterSwitchColumn,
 	Up,
 	Down,
 	PageUp,
@@ -419,8 +526,13 @@ enum Action {
 fn draw_enhanced(
 	frame: &mut Frame,
 	pres: &PresentationState,
-	in_input: bool,
+	in_path_input: bool,
+	in_filter_input: bool,
 	input_buffer: &str,
+	current_filter: &uncp::PathFilter,
+	filter_include_text: &str,
+	filter_exclude_text: &str,
+	filter_input_mode: &FilterInputMode,
 	progress: Option<&str>,
 	engine_status: &str,
 	discovery_progress: &Option<uncp::systems::SystemProgress>,
@@ -428,6 +540,7 @@ fn draw_enhanced(
 	processing_speed: Option<f64>,
 	table_state: &mut TableState,
 ) {
+	let in_input = in_path_input || in_filter_input;
 	let chunks = Layout::default()
 		.direction(Direction::Vertical)
 		.constraints([
@@ -439,14 +552,27 @@ fn draw_enhanced(
 		.split(frame.area());
 
 	// Header with summary information
-	let header = Paragraph::new(Line::from(vec![
+	let mut header_spans = vec![
 		Span::styled("uncp TUI", Style::default().fg(Color::Cyan)),
 		Span::raw("  |  Total: "),
 		Span::raw(pres.total_files.to_string()),
 		Span::raw("  Pending: "),
 		Span::raw(pres.pending_hash.to_string()),
-	]))
-	.block(Block::default().borders(Borders::ALL).title("Summary"));
+	];
+
+	// Add filter information if any filters are active
+	if current_filter.has_patterns() {
+		header_spans.push(Span::raw("  |  Filters: "));
+		header_spans.push(Span::styled(
+			format!("{}inc, {}exc",
+				current_filter.include_patterns.len(),
+				current_filter.exclude_patterns.len()),
+			Style::default().fg(Color::Yellow)
+		));
+	}
+
+	let header = Paragraph::new(Line::from(header_spans))
+		.block(Block::default().borders(Borders::ALL).title("Summary"));
 	frame.render_widget(header, chunks[0]);
 
 	// Body: file table sorted by size
@@ -623,6 +749,8 @@ fn draw_enhanced(
 		Span::raw(" hash  "),
 		Span::styled("p", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
 		Span::raw(" path  "),
+		Span::styled("f", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::raw(" filter  "),
 		// Table navigation
 		Span::styled("↑/↓", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
 		Span::raw(" move  "),
@@ -641,19 +769,30 @@ fn draw_enhanced(
 	.style(Style::default().bg(Color::Black).fg(Color::White));
 	frame.render_widget(keybinding_hints, chunks[3]);
 
-	// Render path input popup if in path input mode
+	// Render input popup if in any input mode
 	if in_input {
-		let popup_area = popup_area(frame.area(), 60, 20);
-		frame.render_widget(Clear, popup_area); // Clear the background
+		if in_filter_input {
+			// Render advanced filter dialog
+			render_filter_dialog(
+				frame,
+				filter_include_text,
+				filter_exclude_text,
+				filter_input_mode,
+			);
+		} else if in_path_input {
+			// Render simple path input dialog
+			let popup_area = popup_area(frame.area(), 60, 20);
+			frame.render_widget(Clear, popup_area);
 
-		let input_display = format!("{}_", input_buffer); // Add cursor
-		let input_widget = Paragraph::new(input_display).block(
-			Block::default()
-				.borders(Borders::ALL)
-				.title("Set Path")
-				.style(Style::default().fg(Color::Yellow)),
-		);
-		frame.render_widget(input_widget, popup_area);
+			let input_display = format!("{}_", input_buffer);
+			let input_widget = Paragraph::new(input_display).block(
+				Block::default()
+					.borders(Borders::ALL)
+					.title("Set Path")
+					.style(Style::default().fg(Color::Yellow)),
+			);
+			frame.render_widget(input_widget, popup_area);
+		}
 	}
 }
 
@@ -666,7 +805,110 @@ fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
 	area
 }
 
-fn handle_events(in_input: bool, input_buffer: &mut String) -> std::io::Result<Vec<Action>> {
+fn render_filter_dialog(
+	frame: &mut Frame,
+	include_text: &str,
+	exclude_text: &str,
+	input_mode: &FilterInputMode,
+) {
+	let popup_area = popup_area(frame.area(), 80, 60);
+	frame.render_widget(Clear, popup_area);
+
+	// Split into two columns
+	let columns = Layout::default()
+		.direction(Direction::Horizontal)
+		.constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+		.split(popup_area);
+
+	// Include patterns column
+	let include_active = matches!(input_mode, FilterInputMode::Include);
+	let include_style = if include_active {
+		Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+	} else {
+		Style::default().fg(Color::White)
+	};
+
+	// Create content with header and text buffer
+	let mut include_content = vec![Line::from("Glob patterns to include (one per line):")];
+	include_content.push(Line::from(""));
+
+	// Add the text content with cursor if active
+	let include_display_text = if include_active {
+		format!("{}_", include_text) // Add cursor
+	} else {
+		include_text.to_string()
+	};
+
+	for line in include_display_text.lines() {
+		include_content.push(Line::from(line.to_string()));
+	}
+
+	let include_widget = Paragraph::new(include_content)
+		.block(
+			Block::default()
+				.borders(Borders::ALL)
+				.title("Include")
+				.style(include_style),
+		)
+		.wrap(Wrap { trim: true });
+	frame.render_widget(include_widget, columns[0]);
+
+	// Exclude patterns column
+	let exclude_active = matches!(input_mode, FilterInputMode::Exclude);
+	let exclude_style = if exclude_active {
+		Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+	} else {
+		Style::default().fg(Color::White)
+	};
+
+	// Create content with header and text buffer
+	let mut exclude_content = vec![Line::from("Glob patterns to exclude (one per line):")];
+	exclude_content.push(Line::from(""));
+
+	// Add the text content with cursor if active
+	let exclude_display_text = if exclude_active {
+		format!("{}_", exclude_text) // Add cursor
+	} else {
+		exclude_text.to_string()
+	};
+
+	for line in exclude_display_text.lines() {
+		exclude_content.push(Line::from(line.to_string()));
+	}
+
+	let exclude_widget = Paragraph::new(exclude_content)
+		.block(
+			Block::default()
+				.borders(Borders::ALL)
+				.title("Exclude")
+				.style(exclude_style),
+		)
+		.wrap(Wrap { trim: true });
+	frame.render_widget(exclude_widget, columns[1]);
+
+	// Instructions at the bottom
+	let instructions = Paragraph::new("Tab: Switch columns  |  Enter: New line  |  Backspace: Delete  |  F10: Apply  |  Esc: Cancel")
+		.style(Style::default().fg(Color::Cyan))
+		.alignment(Alignment::Center);
+
+	let instruction_area = Rect {
+		x: popup_area.x,
+		y: popup_area.y + popup_area.height - 1,
+		width: popup_area.width,
+		height: 1,
+	};
+	frame.render_widget(instructions, instruction_area);
+}
+
+fn handle_events(
+	in_path_input: bool,
+	in_filter_input: bool,
+	input_buffer: &mut String,
+	filter_include_text: &mut String,
+	filter_exclude_text: &mut String,
+	filter_input_mode: &mut FilterInputMode,
+) -> std::io::Result<Vec<Action>> {
+	let in_input = in_path_input || in_filter_input;
 	let mut actions = Vec::new();
 	// Wait briefly for at least one event, then drain the rest without waiting
 	if event::poll(Duration::from_millis(10))? {
@@ -674,12 +916,44 @@ fn handle_events(in_input: bool, input_buffer: &mut String) -> std::io::Result<V
 			match event::read()? {
 				Event::Key(key) => {
 					if in_input {
-						match key.code {
-							KeyCode::Esc => actions.push(Action::CancelPath),
-							KeyCode::Enter => actions.push(Action::SubmitPath),
-							KeyCode::Backspace => { input_buffer.pop(); }
-							KeyCode::Char(c) => { input_buffer.push(c); }
-							_ => {}
+						if in_filter_input {
+							// Special handling for filter input mode
+							match key.code {
+								KeyCode::Esc => actions.push(Action::CancelFilter),
+								KeyCode::Tab => actions.push(Action::FilterSwitchColumn),
+								KeyCode::F(10) => actions.push(Action::SubmitFilter), // F10 to apply filters
+								KeyCode::Enter => {
+									// Add newline to the active text buffer
+									match filter_input_mode {
+										FilterInputMode::Include => filter_include_text.push('\n'),
+										FilterInputMode::Exclude => filter_exclude_text.push('\n'),
+									}
+								}
+								KeyCode::Backspace => {
+									// Remove character from the active text buffer
+									match filter_input_mode {
+										FilterInputMode::Include => { filter_include_text.pop(); }
+										FilterInputMode::Exclude => { filter_exclude_text.pop(); }
+									}
+								}
+								KeyCode::Char(c) => {
+									// Add character to the active text buffer
+									match filter_input_mode {
+										FilterInputMode::Include => filter_include_text.push(c),
+										FilterInputMode::Exclude => filter_exclude_text.push(c),
+									}
+								}
+								_ => {}
+							}
+						} else if in_path_input {
+							// Path input mode
+							match key.code {
+								KeyCode::Esc => actions.push(Action::CancelPath),
+								KeyCode::Enter => actions.push(Action::SubmitPath),
+								KeyCode::Backspace => { input_buffer.pop(); }
+								KeyCode::Char(c) => { input_buffer.push(c); }
+								_ => {}
+							}
 						}
 					} else {
 						let action = match key.code {
@@ -688,6 +962,7 @@ fn handle_events(in_input: bool, input_buffer: &mut String) -> std::io::Result<V
 							KeyCode::Char('s') => Some(Action::Scan),
 							KeyCode::Char('h') => Some(Action::Hash),
 							KeyCode::Char('p') => Some(Action::EnterPathMode),
+							KeyCode::Char('f') => Some(Action::EnterFilterMode),
 							KeyCode::Up => Some(Action::Up),
 							KeyCode::Down => Some(Action::Down),
 							KeyCode::PageUp => Some(Action::PageUp),

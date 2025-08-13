@@ -17,6 +17,8 @@ pub enum EngineCommand {
 	Stop,
 	ClearState,
 	LoadCache(PathBuf),
+	SetPathFilter(crate::PathFilter),
+	ClearPathFilter,
 }
 
 #[derive(Debug, Clone)]
@@ -141,19 +143,16 @@ impl BackgroundEngine {
 												.await;
 										}
 									}
-
-									// Emit snapshot after validation
-									let mut snap =
-										crate::ui::PresentationState::from_detector(&detector);
-									if let Some(ref p) = current_path {
-										let scoped = detector
-											.files_pending_hash_under_prefix(p.to_string_lossy());
-										snap.pending_hash_scoped = Some(scoped);
-									}
-									let _ = evt_tx.send(EngineEvent::SnapshotReady(snap)).await;
-								} else {
-									let _ = evt_tx.send(EngineEvent::CacheLoaded).await; // Still emit loaded even if failed
 								}
+							}
+							EngineCommand::SetPathFilter(filter) => {
+								info!("Engine: setting path filter with {} include patterns, {} exclude patterns",
+									filter.include_patterns.len(), filter.exclude_patterns.len());
+								detector.config.path_filter = filter;
+							}
+							EngineCommand::ClearPathFilter => {
+								info!("Engine: clearing path filter");
+								detector.config.path_filter = crate::PathFilter::default();
 							}
 						}
 					}
