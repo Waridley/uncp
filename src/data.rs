@@ -9,15 +9,48 @@ use uuid::Uuid;
 
 use crate::error::{DetectorError, DetectorResult};
 
-/// File type classification
+/// File type classification for content-based categorization.
+///
+/// This enum categorizes files based on their content type and extension,
+/// enabling efficient filtering and analysis of different file categories.
+/// The classification is used throughout the system for:
+///
+/// - **UI Display**: Grouping files by type in GUI/TUI interfaces
+/// - **Processing Optimization**: Different handling for text vs binary files
+/// - **Similarity Analysis**: Type-specific duplicate detection algorithms
+/// - **Filtering**: Include/exclude specific file types during scanning
+///
+/// # Examples
+///
+/// ```rust
+/// use uncp::data::FileKind;
+///
+/// let file_type = FileKind::Text;
+/// assert_eq!(file_type.to_string(), "text");
+///
+/// // Used in filtering operations
+/// match file_type {
+///     FileKind::Text => println!("Can analyze text content"),
+///     FileKind::Image => println!("Can use perceptual hashing"),
+///     FileKind::Binary => println!("Content-based comparison only"),
+///     _ => println!("General duplicate detection"),
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileKind {
+	/// Text files (source code, documents, configuration files)
 	Text,
+	/// Image files (JPEG, PNG, GIF, etc.)
 	Image,
+	/// Audio files (MP3, WAV, FLAC, etc.)
 	Audio,
+	/// Video files (MP4, AVI, MKV, etc.)
 	Video,
+	/// Archive files (ZIP, TAR, RAR, etc.)
 	Archive,
+	/// Binary executable files and libraries
 	Binary,
+	/// Files with unknown or unrecognized types
 	Unknown,
 }
 
@@ -35,14 +68,67 @@ impl std::fmt::Display for FileKind {
 	}
 }
 
-/// Main data store containing all file metadata and processing state
+/// Primary data structure containing all file metadata and processing state.
+///
+/// `ScanState` is the core data structure that holds all discovered file information
+/// in a Polars DataFrame for efficient columnar operations. It serves as the central
+/// repository for file metadata, processing status, and computed hashes.
+///
+/// ## DataFrame Schema
+///
+/// The internal DataFrame contains the following columns:
+///
+/// - **`path`**: File path as string (primary key)
+/// - **`size`**: File size in bytes (u64)
+/// - **`modified`**: Last modification timestamp (`DateTime<Utc>`)
+/// - **`file_type`**: Detected file type (FileKind enum)
+/// - **`hash`**: Content hash (optional Blake3 hash as string)
+/// - **`hash_computed`**: Whether hash has been computed (boolean)
+/// - **`scan_id`**: Scan session identifier (u32)
+///
+/// ## Performance Characteristics
+///
+/// - **Memory Efficient**: Columnar storage minimizes memory overhead
+/// - **Lazy Evaluation**: Supports datasets larger than available RAM
+/// - **Fast Queries**: Optimized for filtering, grouping, and aggregation
+/// - **Serializable**: Can be saved/loaded from Parquet format for caching
+///
+/// ## Usage Patterns
+///
+/// ```rust
+/// use uncp::data::ScanState;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// // Create new scan state
+/// let mut scan_state = ScanState::new()?;
+///
+/// // Add files from discovery
+/// let file_paths = vec!["/path/to/file1.txt", "/path/to/file2.jpg"];
+/// scan_state.add_files(&file_paths).await?;
+///
+/// // Query for specific file types
+/// let text_files = scan_state.files_by_type("text")?;
+/// println!("Found {} text files", text_files.height());
+///
+/// // Get files that need hashing
+/// let unhashed = scan_state.files_needing_hash()?;
+/// println!("{} files need content hashing", unhashed.height());
+/// # Ok(())
+/// # }
+/// ```
+///
+/// ## Thread Safety
+///
+/// `ScanState` is designed for single-threaded access within the detector.
+/// For concurrent access, use the query interface which provides immutable
+/// views of the data suitable for parallel processing.
 #[derive(Debug, Clone)]
 pub struct ScanState {
-	/// Primary DataFrame containing all file data
+	/// Primary DataFrame containing all file data with columnar storage
 	pub data: DataFrame,
-	/// Current scan identifier
+	/// Current scan identifier for tracking processing sessions
 	pub scan_id: u32,
-	/// Timestamp when scan started
+	/// Timestamp when the current scan session started
 	pub scan_started: DateTime<Utc>,
 }
 
@@ -277,14 +363,82 @@ pub struct FileRecord {
 	pub file_type: FileKind,
 }
 
-/// Store for relational data between files
+/// Storage for relationships and similarity data between files.
+///
+/// `RelationStore` manages the complex relationships discovered during duplicate
+/// detection, including exact matches (same content hash) and similarity relationships
+/// (perceptual hashing, text similarity, etc.). It uses separate DataFrames for
+/// different types of relationships to optimize query performance.
+///
+/// ## Relationship Types
+///
+/// ### Hash Relations
+/// Files with identical content hashes (exact duplicates):
+/// - **`hash`**: Content hash value (string)
+/// - **`paths`**: List of file paths with this hash
+/// - **`count`**: Number of files sharing this hash
+/// - **`total_size`**: Combined size of all duplicate files
+///
+/// ### Similarity Groups
+/// Files grouped by similarity analysis (near-duplicates):
+/// - **`group_id`**: Unique identifier for similarity group
+/// - **`paths`**: List of file paths in this group
+/// - **`similarity_type`**: Type of similarity (perceptual, text, etc.)
+/// - **`confidence`**: Similarity confidence score (0.0-1.0)
+///
+/// ### Pairwise Relations
+/// Individual file-to-file relationships:
+/// - **`path1`**: First file path
+/// - **`path2`**: Second file path
+/// - **`relation_type`**: Type of relationship (duplicate, similar, etc.)
+/// - **`score`**: Relationship strength score
+///
+/// ## Performance Characteristics
+///
+/// - **Indexed Access**: Fast lookups by hash, group ID, or file path
+/// - **Efficient Joins**: Optimized for combining with ScanState data
+/// - **Memory Efficient**: Columnar storage minimizes overhead for large datasets
+/// - **Lazy Evaluation**: Supports complex queries without loading all data
+///
+/// ## Usage Examples
+///
+/// ```rust
+/// use uncp::data::RelationStore;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// // Create new relation store
+/// let mut relations = RelationStore::new()?;
+///
+/// // Add hash-based duplicate relationship
+/// relations.add_hash_relation("abc123", vec![
+///     "/path/to/file1.txt".to_string(),
+///     "/path/to/file2.txt".to_string(),
+/// ])?;
+///
+/// // Query for duplicate groups
+/// let duplicates = relations.get_duplicate_groups()?;
+/// println!("Found {} duplicate groups", duplicates.height());
+///
+/// // Find files similar to a specific file
+/// let similar = relations.find_similar_files("/path/to/target.jpg")?;
+/// println!("Found {} similar files", similar.height());
+/// # Ok(())
+/// # }
+/// ```
+///
+/// ## Integration with ScanState
+///
+/// RelationStore is designed to work seamlessly with ScanState:
+/// - File paths serve as foreign keys between the structures
+/// - Queries can efficiently join data from both stores
+/// - Updates maintain referential integrity automatically
 #[derive(Debug, Clone)]
 pub struct RelationStore {
-	/// Hash relations indexed by hash value
+	/// Hash-based exact duplicate relationships indexed by content hash
 	pub hash_relations: DataFrame,
-	/// Similarity groups indexed by group ID
+	/// Similarity groups for near-duplicate detection with confidence scores
 	pub similarity_groups: DataFrame,
-	/// Pairwise relations between files
+	/// Pairwise file relationships with detailed similarity metrics
 	pub pairwise_relations: DataFrame,
 }
 

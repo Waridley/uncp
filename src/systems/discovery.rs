@@ -10,7 +10,7 @@ use crate::data::{FileKind, FileRecord, ScanState};
 use crate::detector::PathFilter;
 use crate::error::{SystemError, SystemResult};
 use crate::memory::MemoryManager;
-use crate::systems::{yield_periodically, System, SystemContext, SystemProgress, SystemRunner};
+use crate::systems::{yield_periodically_with_cancellation, System, SystemContext, SystemProgress, SystemRunner};
 
 /// System for discovering files in the filesystem
 pub struct FileDiscoverySystem {
@@ -137,8 +137,10 @@ impl FileDiscoverySystem {
 		}
 
 		for entry in walker.into_iter() {
-			// Yield control periodically
-			yield_periodically(last_yield, context.yield_interval).await;
+			// Yield control periodically and check for cancellation
+			if let Err(e) = yield_periodically_with_cancellation(last_yield, context.yield_interval, context).await {
+				return Err(e);
+			}
 
 			let entry = match entry {
 				Ok(e) => e,
@@ -299,6 +301,25 @@ impl SystemRunner for FileDiscoverySystem {
 		_memory_mgr: &mut MemoryManager,
 	) -> SystemResult<()> {
 		let context = SystemContext::new();
+		let files = self.discover_files(&context).await?;
+
+		state
+			.add_files(files)
+			.map_err(|e| SystemError::ExecutionFailed {
+				system: self.name().to_string(),
+				reason: format!("Failed to add files to state: {}", e),
+			})?;
+
+		Ok(())
+	}
+
+	async fn run_with_cancellation(
+		&self,
+		state: &mut ScanState,
+		_memory_mgr: &mut MemoryManager,
+		cancellation_token: std::sync::Arc<std::sync::atomic::AtomicBool>,
+	) -> SystemResult<()> {
+		let context = SystemContext::new().with_cancellation_token(cancellation_token);
 		let files = self.discover_files(&context).await?;
 
 		state

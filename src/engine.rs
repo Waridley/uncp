@@ -9,15 +9,81 @@ use tracing::{info, warn};
 use crate::systems::SystemProgress;
 use crate::{paths::default_cache_dir, DuplicateDetector};
 
+/// Commands for controlling the background processing engine.
+///
+/// `EngineCommand` provides a message-based interface for controlling
+/// the background engine's behavior. Commands are sent through a channel
+/// and processed asynchronously, allowing for responsive UI interaction
+/// while maintaining clean separation between UI and processing logic.
+///
+/// ## Command Categories
+///
+/// ### Path Management
+/// - **SetPath**: Change the directory being scanned
+/// - **SetPathFilter**: Apply glob-based file filtering
+/// - **ClearPathFilter**: Remove all path filters
+///
+/// ### Processing Control
+/// - **Start**: Begin or resume processing operations
+/// - **Pause**: Temporarily halt processing (preserves state)
+/// - **Stop**: Halt processing and prepare for shutdown
+/// - **ClearState**: Reset all detector state for fresh start
+///
+/// ### Cache Operations
+/// - **LoadCache**: Load cached data from specific directory
+///
+/// ## Usage Patterns
+///
+/// ```rust
+/// use uncp::engine::{BackgroundEngine, EngineCommand, EngineMode};
+/// use uncp::DetectorConfig;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// // Create engine with command channel
+/// let (engine, mut events, commands) = BackgroundEngine::new(
+///     DetectorConfig::default(),
+///     EngineMode::Interactive
+/// )?;
+///
+/// // Start background processing
+/// let engine_task = smol::spawn(engine.run());
+///
+/// // Send commands to control processing
+/// commands.send(EngineCommand::SetPath("/data/photos".into())).await?;
+/// commands.send(EngineCommand::Start).await?;
+///
+/// // Process can be paused and resumed
+/// commands.send(EngineCommand::Pause).await?;
+/// commands.send(EngineCommand::Start).await?;
+///
+/// // Clean shutdown
+/// commands.send(EngineCommand::Stop).await?;
+/// engine_task.await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// ## Thread Safety
+///
+/// Commands are sent through async channels and are inherently thread-safe.
+/// Multiple producers can send commands concurrently without synchronization.
 #[derive(Debug, Clone)]
 pub enum EngineCommand {
+	/// Change the directory path being scanned for duplicate files
 	SetPath(PathBuf),
+	/// Start or resume processing operations
 	Start,
+	/// Pause processing while preserving current state
 	Pause,
+	/// Stop processing and prepare for shutdown
 	Stop,
+	/// Clear all detector state for a fresh start
 	ClearState,
+	/// Load cached data from the specified directory
 	LoadCache(PathBuf),
+	/// Apply glob-based path filtering to limit which files are processed
 	SetPathFilter(crate::PathFilter),
+	/// Remove all path filters to process all discovered files
 	ClearPathFilter,
 }
 
@@ -45,11 +111,94 @@ pub struct BackgroundEngine {
 	_evt_rx: channel::Receiver<EngineEvent>,
 }
 
+/// Operating mode configuration for the background processing engine.
+///
+/// `EngineMode` determines the engine's behavior regarding lifecycle management,
+/// resource allocation, and interaction patterns. Different modes are optimized
+/// for different use cases and user interfaces.
+///
+/// ## Mode Characteristics
+///
+/// ### CLI Mode
+/// Optimized for batch processing and command-line usage:
+/// - **Automatic Shutdown**: Exits after completing all work
+/// - **Minimal Overhead**: Reduced memory usage and simpler event handling
+/// - **Progress Reporting**: Essential progress information only
+/// - **Resource Management**: Aggressive cleanup and memory reclamation
+/// - **Error Handling**: Fail-fast behavior with detailed error reporting
+///
+/// ### Interactive Mode
+/// Designed for GUI and TUI applications with ongoing user interaction:
+/// - **Persistent Operation**: Continues running until explicitly stopped
+/// - **Rich Events**: Detailed progress and status information
+/// - **Responsive**: Optimized for real-time UI updates
+/// - **Resource Retention**: Keeps data in memory for fast queries
+/// - **Graceful Degradation**: Continues operation despite non-critical errors
+///
+/// ## Performance Implications
+///
+/// ### CLI Mode Performance
+/// - Lower memory usage due to aggressive cleanup
+/// - Faster startup and shutdown times
+/// - Optimized for single-pass processing
+/// - Minimal event overhead
+///
+/// ### Interactive Mode Performance
+/// - Higher memory usage for responsive queries
+/// - Persistent caching for fast repeated operations
+/// - Real-time progress updates with minimal latency
+/// - Background processing continues during user interaction
+///
+/// ## Usage Examples
+///
+/// ### CLI Application
+/// ```rust
+/// use uncp::engine::{BackgroundEngine, EngineMode};
+/// use uncp::DetectorConfig;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// // CLI mode for batch processing
+/// let (engine, mut events, commands) = BackgroundEngine::new(
+///     DetectorConfig::default(),
+///     EngineMode::Cli
+/// )?;
+///
+/// // Engine will automatically exit after completing work
+/// let result = engine.run().await;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// ### Interactive Application (TUI/GUI)
+/// ```rust
+/// use uncp::engine::{BackgroundEngine, EngineMode};
+/// use uncp::DetectorConfig;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// // Interactive mode for ongoing user interaction
+/// let (engine, mut events, commands) = BackgroundEngine::new(
+///     DetectorConfig::default(),
+///     EngineMode::Interactive
+/// )?;
+///
+/// // Engine continues running until explicitly stopped
+/// let engine_task = smol::spawn(engine.run());
+///
+/// // Handle user interactions...
+/// // commands.send(EngineCommand::Pause).await?;
+/// // commands.send(EngineCommand::Start).await?;
+///
+/// // Explicit shutdown required
+/// commands.send(EngineCommand::Stop).await?;
+/// engine_task.await?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub enum EngineMode {
-	/// CLI mode: exit after completing work
+	/// CLI mode: optimized for batch processing with automatic shutdown
 	Cli,
-	/// Interactive mode: keep running for user interaction (TUI/GUI)
+	/// Interactive mode: persistent operation for GUI/TUI applications
 	Interactive,
 }
 
@@ -81,7 +230,8 @@ impl BackgroundEngine {
 				info!("Engine: started in {:?} mode", mode);
 				let mut current_path: Option<PathBuf> = None;
 				let mut discovery_completed_for_path: Option<PathBuf> = None;
-				let mut running = false;
+				let cancellation_token = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+				let mut engine_running = false;
 				// Save snapshots periodically to avoid losing too much work
 				let mut last_save = std::time::Instant::now();
 
@@ -106,15 +256,24 @@ impl BackgroundEngine {
 								}
 							}
 							EngineCommand::Start => {
-								running = true;
+								engine_running = true;
+								// Reset cancellation token when starting
+								cancellation_token.store(false, std::sync::atomic::Ordering::Relaxed);
 							}
 							EngineCommand::Pause => {
-								running = false;
+								engine_running = false;
 							}
-							EngineCommand::Stop => break,
+							EngineCommand::Stop => {
+								// Cancel any ongoing operations and stop the engine
+								cancellation_token.store(true, std::sync::atomic::Ordering::Relaxed);
+								engine_running = false;
+								break;
+							}
 							EngineCommand::ClearState => {
 								info!("Engine: clearing detector state");
 								detector.clear_state();
+								// Reset cancellation token when clearing state
+								cancellation_token.store(false, std::sync::atomic::Ordering::Relaxed);
 							}
 							EngineCommand::LoadCache(dir) => {
 								let _ = evt_tx.send(EngineEvent::CacheLoading).await;
@@ -157,7 +316,7 @@ impl BackgroundEngine {
 						}
 					}
 
-					if running {
+					if engine_running && !cancellation_token.load(std::sync::atomic::Ordering::Relaxed) {
 						// Check if there's work to do
 						let pending_hash_count = detector.files_pending_hash();
 						let _total_files = detector.total_files();
@@ -194,25 +353,33 @@ impl BackgroundEngine {
 											.try_send(EngineEvent::DiscoveryProgress(progress));
 									});
 
-								// Run discovery for this path (this will complete the discovery)
-								let _ = detector
-									.scan_with_progress(p.clone(), discovery_progress)
+								// Run discovery for this path with cancellation support
+								let result = detector
+									.scan_with_progress_and_cancellation(p.clone(), discovery_progress, cancellation_token.clone())
 									.await;
 
-								// Emit final discovery progress
-								let final_progress = crate::systems::SystemProgress {
-									system_name: "Discovery".to_string(),
-									processed_items: detector.total_files(),
-									total_items: detector.total_files(),
-									current_item: Some("Discovery completed".to_string()),
-									estimated_remaining: None,
-								};
-								let _ = evt_tx
-									.send(EngineEvent::DiscoveryProgress(final_progress))
-									.await;
+								// Check if discovery was cancelled
+								if cancellation_token.load(std::sync::atomic::Ordering::Relaxed) {
+									info!("Engine: discovery was cancelled");
+									continue; // Skip to next iteration to process new commands
+								}
 
-								// Mark discovery as completed for this path
-								discovery_completed_for_path = current_path.clone();
+								if result.is_ok() {
+									// Emit final discovery progress
+									let final_progress = crate::systems::SystemProgress {
+										system_name: "Discovery".to_string(),
+										processed_items: detector.total_files(),
+										total_items: detector.total_files(),
+										current_item: Some("Discovery completed".to_string()),
+										estimated_remaining: None,
+									};
+									let _ = evt_tx
+										.send(EngineEvent::DiscoveryProgress(final_progress))
+										.await;
+
+									// Mark discovery as completed for this path
+									discovery_completed_for_path = current_path.clone();
+								}
 							}
 						} else if needs_hashing {
 							info!(
@@ -263,7 +430,7 @@ impl BackgroundEngine {
 								pending_hash_count
 							);
 							let _ = evt_tx.send(EngineEvent::Completed).await;
-							running = false;
+							engine_running = false;
 
 							// For CLI usage: if we have a path set and no pending work, we're done
 							if matches!(mode, EngineMode::Cli) && current_path.is_some() {

@@ -5523,6 +5523,7 @@ dependencies = [
  "async-channel 2.2.0",
  "async-executor",
  "crossterm 0.29.0",
+ "dirs 5.0.1",
  "easy-parallel",
  "futures-lite 2.3.0",
  "ratatui",

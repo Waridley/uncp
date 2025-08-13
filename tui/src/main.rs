@@ -198,18 +198,62 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 					if in_path_input {
 						let new_path_str = input_buffer.trim();
 						info!("Submitting path: {}", new_path_str);
-						current_path = PathBuf::from(new_path_str);
+
+						// Expand tilde to home directory
+						let expanded_path_str = if new_path_str.starts_with('~') {
+							if let Some(home_dir) = dirs::home_dir() {
+								if new_path_str == "~" {
+									home_dir.to_string_lossy().to_string()
+								} else if new_path_str.starts_with("~/") {
+									let rest = &new_path_str[2..];
+									home_dir.join(rest).to_string_lossy().to_string()
+								} else {
+									new_path_str.to_string()
+								}
+							} else {
+								pres = pres.clone().with_status("Error: Could not determine home directory".to_string());
+								// Stay in path input mode to allow correction
+								continue;
+							}
+						} else {
+							new_path_str.to_string()
+						};
+
+						// Validate the path exists
+						let new_path = PathBuf::from(&expanded_path_str);
+						if !new_path.exists() {
+							pres = pres.clone().with_status(format!("Error: Path '{}' does not exist", new_path.display()));
+							// Stay in path input mode to allow correction
+							continue;
+						}
+
+						current_path = new_path;
 						in_path_input = false;
 						pres = pres
 							.clone()
-							.with_status(format!("Path set to {}", current_path.display()));
-						info!("Path set to {}", current_path.display());
+							.with_status(format!("Scanning path: {}", current_path.display()));
+						info!("Path set to {}, starting new scan", current_path.display());
 
-						// Clear existing state and restart engine with new path
+						// Immediately stop current scan and clear state
 						let _ = cmds.try_send(EngineCommand::Stop);
 						let _ = cmds.try_send(EngineCommand::ClearState);
+
+						// Wait a bit longer for the stop command to be processed and cancellation to take effect
+						std::thread::sleep(std::time::Duration::from_millis(200));
+
+						// Set new path and restart
 						let _ = cmds.try_send(EngineCommand::SetPath(current_path.clone()));
+
+						// Apply current filter if any
+						if !current_filter.include_patterns.is_empty() || !current_filter.exclude_patterns.is_empty() {
+							let _ = cmds.try_send(EngineCommand::SetPathFilter(current_filter.clone()));
+						}
+
+						// Start the scan
 						let _ = cmds.try_send(EngineCommand::Start);
+
+						// Clear input buffer
+						input_buffer.clear();
 					}
 				}
 				Action::SubmitFilter => {
@@ -731,7 +775,7 @@ fn draw_enhanced(
 	frame.render_widget(footer, chunks[2]);
 
 	// Keybinding hints at the bottom with distinct styling (no box, better contrast)
-	let keybinding_hints = Paragraph::new(Line::from(vec![
+	let mut hint_spans = vec![
 		Span::styled(
 			"Keys: ",
 			Style::default()
@@ -759,14 +803,22 @@ fn draw_enhanced(
 		Span::styled("Home", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
 		Span::raw(" top  "),
 		Span::styled("End", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-		Span::raw(" bottom  "),
-		// Path input mode
-		Span::styled("Enter", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-		Span::raw(" confirm  "),
-		Span::styled("Esc", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-		Span::raw(" cancel"),
-	]))
-	.style(Style::default().bg(Color::Black).fg(Color::White));
+		Span::raw(" bottom"),
+	];
+
+	// Only show Enter/Esc hints when in path input mode
+	if in_path_input {
+		hint_spans.extend_from_slice(&[
+			Span::raw("  "),
+			Span::styled("Enter", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+			Span::raw(" confirm  "),
+			Span::styled("Esc", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+			Span::raw(" cancel"),
+		]);
+	}
+
+	let keybinding_hints = Paragraph::new(Line::from(hint_spans))
+		.style(Style::default().bg(Color::Black).fg(Color::White));
 	frame.render_widget(keybinding_hints, chunks[3]);
 
 	// Render input popup if in any input mode

@@ -20,6 +20,17 @@ pub trait SystemRunner: Send + Sync {
 	/// Run the system on the current state
 	async fn run(&self, state: &mut ScanState, memory_mgr: &mut MemoryManager) -> SystemResult<()>;
 
+	/// Run the system with cancellation support
+	async fn run_with_cancellation(
+		&self,
+		state: &mut ScanState,
+		memory_mgr: &mut MemoryManager,
+		cancellation_token: std::sync::Arc<std::sync::atomic::AtomicBool>,
+	) -> SystemResult<()> {
+		// Default implementation just calls run() - systems can override for cancellation support
+		self.run(state, memory_mgr).await
+	}
+
 	/// Check if this system can run (dependencies met)
 	fn can_run(&self, state: &ScanState) -> bool;
 
@@ -86,6 +97,7 @@ pub struct SystemContext {
 	pub max_concurrent_files: usize,
 	pub yield_interval: std::time::Duration,
 	pub progress_callback: Option<Box<dyn Fn(SystemProgress) + Send + Sync>>,
+	pub cancellation_token: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for SystemContext {
@@ -94,6 +106,7 @@ impl Default for SystemContext {
 			max_concurrent_files: num_cpus::get(),
 			yield_interval: std::time::Duration::from_millis(100),
 			progress_callback: None,
+			cancellation_token: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
 		}
 	}
 }
@@ -121,14 +134,27 @@ impl SystemContext {
 		self
 	}
 
+	pub fn with_cancellation_token(mut self, token: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+		self.cancellation_token = token;
+		self
+	}
+
 	pub fn report_progress(&self, progress: SystemProgress) {
 		if let Some(ref callback) = self.progress_callback {
 			callback(progress);
 		}
 	}
+
+	pub fn is_cancelled(&self) -> bool {
+		self.cancellation_token.load(std::sync::atomic::Ordering::Relaxed)
+	}
+
+	pub fn cancel(&self) {
+		self.cancellation_token.store(true, std::sync::atomic::Ordering::Relaxed);
+	}
 }
 
-/// Helper function to yield control periodically
+/// Helper function to yield control periodically and check for cancellation
 pub async fn yield_periodically(
 	last_yield: &mut std::time::Instant,
 	interval: std::time::Duration,
@@ -137,4 +163,25 @@ pub async fn yield_periodically(
 		smol::future::yield_now().await;
 		*last_yield = std::time::Instant::now();
 	}
+}
+
+/// Helper function to yield control periodically and check for cancellation
+pub async fn yield_periodically_with_cancellation(
+	last_yield: &mut std::time::Instant,
+	interval: std::time::Duration,
+	context: &SystemContext,
+) -> Result<(), crate::error::SystemError> {
+	if last_yield.elapsed() >= interval {
+		smol::future::yield_now().await;
+		*last_yield = std::time::Instant::now();
+	}
+
+	if context.is_cancelled() {
+		return Err(crate::error::SystemError::ExecutionFailed {
+			system: "System".to_string(),
+			reason: "Operation was cancelled".to_string(),
+		});
+	}
+
+	Ok(())
 }

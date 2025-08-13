@@ -486,40 +486,8 @@ pub mod engine;
 pub mod similarity;
 
 // Re-export main API types for convenient access
-
-/// Core data structures for file metadata and relationships.
-///
-/// The [`ScanState`] contains the primary DataFrame with all file information,
-/// while [`RelationStore`] manages similarity groups and pairwise relationships.
-/// Both use Polars DataFrames for efficient data operations and support
-/// serialization for persistent caching.
 pub use data::{RelationStore, ScanState};
-
-/// Main duplicate detection API and configuration types.
-///
-/// [`DuplicateDetector`] is the primary interface for file scanning and analysis.
-/// [`DetectorConfig`] provides memory management and processing configuration.
-/// [`PathFilter`] enables glob-based inclusion/exclusion of files during scanning.
 pub use detector::{DetectorConfig, DuplicateDetector, PathFilter};
-
-/// Comprehensive error handling with context and recovery information.
-///
-/// [`DetectorError`] covers all error conditions in the detection pipeline.
-/// [`DetectorResult`] is a convenience type alias for `Result<T, DetectorError>`.
-/// Errors include I/O failures, memory exhaustion, configuration issues, and
-/// processing failures with detailed context for debugging and recovery.
 pub use error::{DetectorError, DetectorResult};
-
-/// High-level query interface for accessing processed data.
-///
-/// [`Query`] provides convenient methods for filtering and analyzing
-/// file data and relationships. It operates on immutable references
-/// to the underlying DataFrames for safe concurrent access.
 pub use query::Query;
-
-/// Background processing engine for async operations.
-///
-/// [`EngineMode`] configures the processing behavior of the background engine,
-/// supporting different operational modes for CLI, GUI, and TUI interfaces.
-/// The engine provides progress callbacks and command-based control.
 pub use engine::{EngineMode};
