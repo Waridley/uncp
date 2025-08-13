@@ -43,9 +43,28 @@ pub struct BackgroundEngine {
 	_evt_rx: channel::Receiver<EngineEvent>,
 }
 
+#[derive(Debug, Clone)]
+pub enum EngineMode {
+	/// CLI mode: exit after completing work
+	Cli,
+	/// Interactive mode: keep running for user interaction (TUI/GUI)
+	Interactive,
+}
+
 impl BackgroundEngine {
 	pub fn start(
 		mut detector: DuplicateDetector,
+	) -> (
+		Self,
+		channel::Receiver<EngineEvent>,
+		channel::Sender<EngineCommand>,
+	) {
+		Self::start_with_mode(detector, EngineMode::Interactive)
+	}
+
+	pub fn start_with_mode(
+		mut detector: DuplicateDetector,
+		mode: EngineMode,
 	) -> (
 		Self,
 		channel::Receiver<EngineEvent>,
@@ -57,8 +76,9 @@ impl BackgroundEngine {
 		// Spawn the engine loop on a smol executor thread
 		std::thread::spawn(move || {
 			future::block_on(async move {
-				info!("Engine: started");
+				info!("Engine: started in {:?} mode", mode);
 				let mut current_path: Option<PathBuf> = None;
+				let mut discovery_completed_for_path: Option<PathBuf> = None;
 				let mut running = false;
 				// Save snapshots periodically to avoid losing too much work
 				let mut last_save = std::time::Instant::now();
@@ -77,7 +97,11 @@ impl BackgroundEngine {
 					while let Ok(cmd) = cmd_rx.try_recv() {
 						match cmd {
 							EngineCommand::SetPath(p) => {
-								current_path = Some(p);
+								current_path = Some(p.clone());
+								// Reset discovery completion when path changes
+								if discovery_completed_for_path.as_ref() != Some(&p) {
+									discovery_completed_for_path = None;
+								}
 							}
 							EngineCommand::Start => {
 								running = true;
@@ -139,9 +163,9 @@ impl BackgroundEngine {
 						let pending_hash_count = detector.files_pending_hash();
 						let _total_files = detector.total_files();
 
-						// Always run discovery when a path is set and scan is requested
-						// This ensures users see immediate progress when they request a scan
-						let needs_discovery = current_path.is_some();
+						// Only run discovery if we have a path and haven't completed discovery for it yet
+						let needs_discovery = current_path.is_some()
+							&& discovery_completed_for_path != current_path;
 
 						let needs_hashing = pending_hash_count > 0;
 
@@ -187,6 +211,9 @@ impl BackgroundEngine {
 								let _ = evt_tx
 									.send(EngineEvent::DiscoveryProgress(final_progress))
 									.await;
+
+								// Mark discovery as completed for this path
+								discovery_completed_for_path = current_path.clone();
 							}
 						} else if needs_hashing {
 							info!(
@@ -238,6 +265,12 @@ impl BackgroundEngine {
 							);
 							let _ = evt_tx.send(EngineEvent::Completed).await;
 							running = false;
+
+							// For CLI usage: if we have a path set and no pending work, we're done
+							if matches!(mode, EngineMode::Cli) && current_path.is_some() {
+								info!("Engine: work completed for CLI mode, stopping");
+								break;
+							}
 						}
 
 						// Always emit snapshot for UI updates

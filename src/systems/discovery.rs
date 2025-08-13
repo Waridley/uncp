@@ -7,6 +7,7 @@ use tracing::{debug, info, trace, warn};
 use walkdir::WalkDir;
 
 use crate::data::{FileKind, FileRecord, ScanState};
+use crate::detector::PathFilter;
 use crate::error::{SystemError, SystemResult};
 use crate::memory::MemoryManager;
 use crate::systems::{yield_periodically, System, SystemContext, SystemProgress, SystemRunner};
@@ -29,6 +30,8 @@ pub struct FileDiscoverySystem {
 	pub min_file_size: u64,
 	/// Maximum file size to include (in bytes, None for unlimited)
 	pub max_file_size: Option<u64>,
+	/// Glob-based path filtering
+	pub path_filter: Option<PathFilter>,
 }
 
 impl FileDiscoverySystem {
@@ -43,6 +46,7 @@ impl FileDiscoverySystem {
 			min_file_size: 0,
 			max_file_size: None,
 			progress_callback: None,
+			path_filter: None,
 		}
 	}
 
@@ -83,6 +87,12 @@ impl FileDiscoverySystem {
 		cb: std::sync::Arc<dyn Fn(SystemProgress) + Send + Sync>,
 	) -> Self {
 		self.progress_callback = Some(cb);
+		self
+	}
+
+	/// Set path filter for glob-based filtering
+	pub fn with_path_filter(mut self, filter: PathFilter) -> Self {
+		self.path_filter = Some(filter);
 		self
 	}
 
@@ -209,6 +219,14 @@ impl FileDiscoverySystem {
 	}
 
 	fn should_include_file(&self, path: &Path) -> bool {
+		// First check glob-based path filter if configured
+		if let Some(ref filter) = self.path_filter {
+			if !filter.should_include(path) {
+				return false;
+			}
+		}
+
+		// Then check legacy extension-based filtering
 		let extension = path
 			.extension()
 			.and_then(|ext| ext.to_str())

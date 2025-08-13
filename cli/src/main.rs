@@ -26,10 +26,10 @@ fn init_tracing(verbosity: u8) {
 }
 
 use dirs::cache_dir;
-use uncp::engine::{BackgroundEngine, EngineCommand, EngineEvent};
+use uncp::engine::{BackgroundEngine, EngineCommand, EngineEvent, EngineMode};
 
 use std::fs;
-use uncp::{DetectorConfig, DuplicateDetector};
+use uncp::{DetectorConfig, DuplicateDetector, PathFilter};
 
 fn default_cache_dir() -> Option<PathBuf> {
 	cache_dir().map(|mut p| {
@@ -55,8 +55,13 @@ fn main() {
 
 async fn run(opts: Opts) -> anyhow::Result<()> {
 	match opts.command {
-		Command::Scan { path, hash: _ } => {
-			let mut detector = DuplicateDetector::new(DetectorConfig::default())?;
+		Command::Scan { path, hash: _, include, exclude } => {
+			// Create detector config with path filtering
+			let mut config = DetectorConfig::default();
+			if !include.is_empty() || !exclude.is_empty() {
+				config.path_filter = PathFilter::new(include, exclude)?;
+			}
+			let mut detector = DuplicateDetector::new(config.clone())?;
 			let cache_path = default_cache_dir();
 			if let Some(dir) = &cache_path {
 				ensure_dir(dir)?;
@@ -68,8 +73,10 @@ async fn run(opts: Opts) -> anyhow::Result<()> {
 			}
 
 			// Foreground CLI: run engine for parallel speedup, print progress to stderr, exit on completion
-			let (_engine, events, cmds) = BackgroundEngine::start(detector);
+			let (_engine, events, cmds) = BackgroundEngine::start_with_mode(detector, EngineMode::Cli);
 			let _ = cmds.send(EngineCommand::SetPath(path.clone())).await;
+			// Clear any cached state to ensure we only scan the specified path
+			let _ = cmds.send(EngineCommand::ClearState).await;
 			let _ = cmds.send(EngineCommand::Start).await;
 
 			let pref = path.to_string_lossy().to_string();
@@ -93,8 +100,8 @@ async fn run(opts: Opts) -> anyhow::Result<()> {
 
 			// Save final state to cache and print summary
 			if let Some(dir) = default_cache_dir() {
-				// Re-load so we have a detector for printing
-				let mut det = DuplicateDetector::new(DetectorConfig::default())?;
+				// Re-load so we have a detector for printing (use same config)
+				let mut det = DuplicateDetector::new(config.clone())?;
 				det.load_cache_all(dir.clone())?;
 				print_summary(&det);
 			}
@@ -149,6 +156,12 @@ pub enum Command {
 		/// Also run hashing
 		#[arg(long)]
 		hash: bool,
+		/// Include only files matching these glob patterns (can be specified multiple times)
+		#[arg(long = "include", action = clap::ArgAction::Append)]
+		include: Vec<String>,
+		/// Exclude files matching these glob patterns (can be specified multiple times)
+		#[arg(long = "exclude", action = clap::ArgAction::Append)]
+		exclude: Vec<String>,
 	},
 	/// Delete the local cache directory
 	ClearCache,

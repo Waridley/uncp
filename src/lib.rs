@@ -20,6 +20,9 @@ pub mod systems;
 
 // Re-export main API types
 pub use data::{RelationStore, ScanState};
-pub use detector::{DetectorConfig, DuplicateDetector};
+pub use detector::{DetectorConfig, DuplicateDetector, PathFilter};
 pub use error::{DetectorError, DetectorResult};
 pub use query::Query;
+
+// Re-export engine types for CLI/TUI usage
+pub use engine::{EngineMode};

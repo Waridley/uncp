@@ -30,6 +30,9 @@ pub enum DetectorError {
 	#[error("Configuration error: {0}")]
 	Config(String),
 
+	#[error("Invalid glob pattern '{pattern}': {reason}")]
+	InvalidGlobPattern { pattern: String, reason: String },
+
 	#[error("Serialization error: {0}")]
 	Serialization(#[from] bincode::Error),
 }

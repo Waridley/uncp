@@ -7,17 +7,138 @@ use crate::data::{RelationStore, ScanState};
 use crate::error::{DetectorError, DetectorResult};
 use crate::memory::{MemoryManager, Settings};
 use crate::query::Query;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 
 use crate::paths::default_cache_dir;
 
 use crate::systems::{ContentHashSystem, FileDiscoverySystem, SystemProgress, SystemScheduler};
 use tracing::info;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+pub struct PathFilter {
+	/// Glob patterns that determine what files to include in scanning
+	/// If empty, all files are included by default
+	pub include_patterns: Vec<String>,
+	/// Glob patterns that exclude files from scanning
+	/// Applied after include patterns
+	pub exclude_patterns: Vec<String>,
+	/// Compiled globset for include patterns (cached)
+	include_globset: Option<GlobSet>,
+	/// Compiled globset for exclude patterns (cached)
+	exclude_globset: Option<GlobSet>,
+}
+
+impl Default for PathFilter {
+	fn default() -> Self {
+		Self {
+			include_patterns: Vec::new(),
+			exclude_patterns: Vec::new(),
+			include_globset: None,
+			exclude_globset: None,
+		}
+	}
+}
+
+impl PathFilter {
+	/// Create a new PathFilter with the given patterns
+	pub fn new(include_patterns: Vec<String>, exclude_patterns: Vec<String>) -> DetectorResult<Self> {
+		let mut filter = Self {
+			include_patterns,
+			exclude_patterns,
+			include_globset: None,
+			exclude_globset: None,
+		};
+		filter.compile_patterns()?;
+		Ok(filter)
+	}
+
+	/// Compile the glob patterns into GlobSets for efficient matching
+	pub fn compile_patterns(&mut self) -> DetectorResult<()> {
+		// Compile include patterns
+		if !self.include_patterns.is_empty() {
+			let mut builder = GlobSetBuilder::new();
+			for pattern in &self.include_patterns {
+				let glob = Glob::new(pattern)
+					.map_err(|e| DetectorError::InvalidGlobPattern {
+						pattern: pattern.clone(),
+						reason: e.to_string()
+					})?;
+				builder.add(glob);
+			}
+			self.include_globset = Some(builder.build()
+				.map_err(|e| DetectorError::InvalidGlobPattern {
+					pattern: "include patterns".to_string(),
+					reason: e.to_string()
+				})?);
+		}
+
+		// Compile exclude patterns
+		if !self.exclude_patterns.is_empty() {
+			let mut builder = GlobSetBuilder::new();
+			for pattern in &self.exclude_patterns {
+				let glob = Glob::new(pattern)
+					.map_err(|e| DetectorError::InvalidGlobPattern {
+						pattern: pattern.clone(),
+						reason: e.to_string()
+					})?;
+				builder.add(glob);
+			}
+			self.exclude_globset = Some(builder.build()
+				.map_err(|e| DetectorError::InvalidGlobPattern {
+					pattern: "exclude patterns".to_string(),
+					reason: e.to_string()
+				})?);
+		}
+
+		Ok(())
+	}
+
+	/// Check if a path should be included based on the filter patterns
+	pub fn should_include<P: AsRef<Path>>(&self, path: P) -> bool {
+		let path = path.as_ref();
+
+		// If we have include patterns, the path must match at least one
+		if let Some(ref include_set) = self.include_globset {
+			if !include_set.is_match(path) {
+				return false;
+			}
+		}
+
+		// If we have exclude patterns, the path must not match any
+		if let Some(ref exclude_set) = self.exclude_globset {
+			if exclude_set.is_match(path) {
+				return false;
+			}
+		}
+
+		true
+	}
+
+	/// Add an include pattern
+	pub fn add_include_pattern(&mut self, pattern: String) -> DetectorResult<()> {
+		self.include_patterns.push(pattern);
+		self.compile_patterns()
+	}
+
+	/// Add an exclude pattern
+	pub fn add_exclude_pattern(&mut self, pattern: String) -> DetectorResult<()> {
+		self.exclude_patterns.push(pattern);
+		self.compile_patterns()
+	}
+
+	/// Check if any patterns are configured
+	pub fn has_patterns(&self) -> bool {
+		!self.include_patterns.is_empty() || !self.exclude_patterns.is_empty()
+	}
+}
+
+#[derive(Debug, Clone)]
 pub struct DetectorConfig {
 	pub memory_settings: Settings,
 	/// Disable automatic cache saving (useful for tests)
 	pub disable_auto_cache: bool,
+	/// Path filtering configuration
+	pub path_filter: PathFilter,
 }
 
 impl Default for DetectorConfig {
@@ -25,6 +146,7 @@ impl Default for DetectorConfig {
 		Self {
 			memory_settings: Settings::from_sysinfo().expect("failed to read sysinfo"),
 			disable_auto_cache: false,
+			path_filter: PathFilter::default(),
 		}
 	}
 }
@@ -36,6 +158,7 @@ impl DetectorConfig {
 		Self {
 			memory_settings: Settings::from_sysinfo().expect("failed to read sysinfo"),
 			disable_auto_cache: true,
+			path_filter: PathFilter::default(),
 		}
 	}
 }
@@ -87,7 +210,10 @@ impl DuplicateDetector {
 
 	pub async fn scan_directory(&mut self, path: PathBuf) -> DetectorResult<()> {
 		info!("Detector: scan_directory {}", path.display());
-		let discovery = FileDiscoverySystem::new(vec![path]);
+		let mut discovery = FileDiscoverySystem::new(vec![path]);
+		if self.config.path_filter.has_patterns() {
+			discovery = discovery.with_path_filter(self.config.path_filter.clone());
+		}
 		self.scheduler.add_system(discovery);
 		let res = self
 			.scheduler
@@ -111,7 +237,10 @@ impl DuplicateDetector {
 			"Detector: scan_directory {} (with progress)",
 			path.display()
 		);
-		let discovery = FileDiscoverySystem::new(vec![path]).with_progress_callback(progress);
+		let mut discovery = FileDiscoverySystem::new(vec![path]).with_progress_callback(progress);
+		if self.config.path_filter.has_patterns() {
+			discovery = discovery.with_path_filter(self.config.path_filter.clone());
+		}
 		self.scheduler.add_system(discovery);
 		let res = self
 			.scheduler
