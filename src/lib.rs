@@ -1,13 +1,9 @@
-//! # UNCP - Universal Non-Duplicate Copy
+//! # uncp - Un-copy (Duplicate File Detection)
 //!
-//! A comprehensive, high-performance duplicate file detection and management system built in Rust.
-//!
-//! ## Overview
-//!
-//! UNCP provides enterprise-grade duplicate file detection using a data-oriented design philosophy
-//! with Polars DataFrames for efficient data processing and the smol async runtime for concurrent
-//! operations. The system supports multiple interfaces (CLI, GUI, TUI) and provides real-time
-//! monitoring, intelligent caching, and cross-platform compatibility.
+//! A tool to help you de-duplicate your data. Multiple similarity metrics, asynchronous scanning,
+//! and high-performance file analysis. Builds a graph of file relationships for flexible querying.
+//! Data-oriented design backed by Polars DataFrames. Multiple ways to use, including as a Rust
+//! library, CLI, GUI, and TUI.
 //!
 //! ## Architecture
 //!

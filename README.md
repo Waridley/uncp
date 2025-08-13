@@ -1,31 +1,38 @@
 # UNCP - Un-copy (Duplicate File Detection)
 
-A comprehensive duplicate file detection and management tool built in Rust, featuring CLI, GUI, and TUI interfaces.
+A tool to help you de-duplicate your data.
 
 ## Features
 
-- **Fast file discovery** with configurable filters
-- **Content-based duplicate detection** using Blake3 hashing
-- **Multiple interfaces**: Command-line (CLI), Graphical (GUI), and Terminal (TUI)
-- **Efficient caching** with Polars DataFrames
-- **Memory-aware processing** with configurable limits
+- **Multiple similarity metrics** such as exact content hashing, perceptual hashing, and text diffing
+- **Asynchronous scanning** for responsive UI and immediate access to discovered files and relationships
+- **High-performance file analysis** — speed is a top priority guiding development
+- **Builds a graph of file relationships** for flexible querying
+- **Data-oriented design** backed by Polars DataFrames and a custom system scheduler
+- **Parquet cache format** allowing for analysis in other data analytics tools
+- **Multiple ways to use**, including as a Rust library, CLI, GUI, and TUI.
 - **Cross-platform support** (Linux, macOS, Windows)
 
 ## Installation
 
 ### From Source
 
+Requires [the Rust toolchain](https://www.rust-lang.org/tools/install)
+
 ```bash
-git clone https://github.com/your-username/uncp.git
+git clone https://github.com/Waridley/uncp.git
 cd uncp
-cargo build --release
+cargo install --path cli --release
 ```
 
-### Using Cargo
-
-```bash
-cargo install uncp-cli
-```
+### TODO -- Publish to crates.io
+> ### Using Cargo
+> 
+> ```bash
+> cargo install uncp-cli
+> cargo install uncp-gui
+> cargo install uncp-tui
+> ```
 
 ## Usage
 
@@ -38,7 +45,10 @@ uncp scan /path/to/directory
 # Scan and hash files for content-based detection
 uncp scan /path/to/directory --hash
 
-# Clear the cache
+# Filter files using globs
+uncp scan /path/to/directory --include "**/*.jpg" --include "**/*.png" --exclude "**/node_modules/**"
+
+# Clear the cache to save data or if it has been corrupted somehow
 uncp clear-cache
 ```
 
@@ -54,115 +64,14 @@ uncp-tui
 uncp-gui
 ```
 
-## Development
-
-### Prerequisites
-
-- Rust 1.70+ (stable toolchain)
-- System dependencies:
-  - Linux: `pkg-config`, `libssl-dev`
-  - macOS: Xcode command line tools
-  - Windows: Visual Studio Build Tools
-
-### Building
-
-```bash
-# Build all workspace members
-cargo build --workspace
-
-# Build with optimizations
-cargo build --workspace --release
-```
-
-### Testing
-
-```bash
-# Run all tests
-cargo test --workspace
-
-# Run tests with all features
-cargo test --workspace --all-features
-
-# Run benchmarks
-cargo bench
-```
-
-### Code Quality
-
-```bash
-# Check formatting
-cargo fmt --all -- --check
-
-# Run clippy lints
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-# Security audit
-cargo audit
-```
-
-## Continuous Integration
-
-This project uses GitHub Actions for CI/CD with the following workflows:
-
-### Main CI Pipeline (`.github/workflows/ci.yml`)
-
-- **Multi-platform testing**: Ubuntu, Windows, macOS
-- **Code quality checks**: formatting, clippy lints, security audit
-- **Documentation building**: ensures docs compile correctly
-- **Code coverage**: generates coverage reports with codecov
-
-### Release Pipeline (`.github/workflows/release.yml`)
-
-- **Automated releases**: triggered on version tags
-- **Cross-platform binaries**: builds for multiple targets
-- **Crates.io publishing**: publishes to the Rust package registry
-
-### Benchmarking (`.github/workflows/benchmark.yml`)
-
-- **Performance tracking**: runs benchmarks on main branch
-- **Memory profiling**: uses Valgrind for memory usage analysis
-- **Regression detection**: alerts on performance degradation
-
-### Dependency Management
-
-- **Dependabot**: automated dependency updates
-- **Security scanning**: regular vulnerability checks
-
-## Architecture
-
-The project uses a modular, data-oriented design:
-
-- **Core library** (`src/`): Main duplicate detection logic
-- **CLI** (`cli/`): Command-line interface
-- **GUI** (`gui/`): Graphical interface using Iced
-- **TUI** (`tui/`): Terminal interface using Ratatui
-
-### Key Components
-
-- **Systems**: Modular processing pipeline (discovery, hashing, similarity)
-- **Data layer**: Polars DataFrames for efficient data operations
-- **Caching**: Persistent storage for scan results
-- **Memory management**: Adaptive memory usage based on system resources
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests for new functionality
-5. Ensure CI passes
-6. Submit a pull request
-
-### Code Style
-
-- Follow Rust standard formatting (`cargo fmt`)
-- Address all clippy warnings
-- Add documentation for public APIs
-- Include tests for new features
-
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+All code in this repository is dual-licensed under either:
+
+- MIT License ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+
+at your option.
 
 ## Acknowledgments
 
@@ -170,3 +79,11 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Uses [Blake3](https://github.com/BLAKE3-team/BLAKE3) for fast, secure hashing
 - GUI powered by [Iced](https://iced.rs/)
 - TUI built with [Ratatui](https://ratatui.rs/)
+
+## LLM Usage Disclaimer
+
+The formal [Design Document](DESIGN.md) and initial implementation of this
+project was effectively vibe-coded using the Augment Code plugin for CLion,
+as a way for me to quickly get something working and test the limits of the
+vibe coding approach myself. I may continue to use LLMs for some of the work
+on this project, but not quite to the extent that I did for the initial work.
