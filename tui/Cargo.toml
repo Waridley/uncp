@@ -7,7 +7,7 @@ edition = "2021"
 uncp.path = ".."
 crossterm = "0.29.0"
 ratatui = "0.30.0-alpha.2"
-smol = "1"
+smol = "2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 tracing = "0.1"
