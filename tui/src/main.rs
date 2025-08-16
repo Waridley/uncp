@@ -10,6 +10,7 @@ use easy_parallel::Parallel;
 use futures_lite::future;
 
 use crossterm::event::{self, Event, KeyCode};
+use crossterm::execute;
 use ratatui::{
 	layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
 	style::{Color, Modifier, Style},
@@ -55,8 +56,20 @@ fn main() -> std::io::Result<()> {
 	Parallel::new()
 		.each(0..nthreads, |_| future::block_on(ex.run(shutdown.recv())))
 		.finish(|| {
+			// Explicitly enable mouse support
+			let _ = execute!(
+				std::io::stdout(),
+				crossterm::event::EnableMouseCapture
+			);
+
 			let mut terminal = ratatui::init();
 			let _ = run(&ex, &mut terminal);
+
+			// Disable mouse support on exit
+			let _ = execute!(
+				std::io::stdout(),
+				crossterm::event::DisableMouseCapture
+			);
 			ratatui::restore();
 
 			// Stop executor threads
@@ -91,6 +104,7 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 	let mut filter_include_text = String::new(); // Multi-line text buffer for include patterns
 	let mut filter_exclude_text = String::new(); // Multi-line text buffer for exclude patterns
 	let mut filter_input_mode = FilterInputMode::Include; // Which column is active
+
 	debug!("TUI loop start");
 
 	let progress_state: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -372,6 +386,51 @@ fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::
 					}
 					table_state.select(Some(selected_idx));
 				}
+				Action::SelectRow(mouse_row, mouse_col) => {
+					// Debug: Always log mouse clicks to understand coordinates
+					debug!("Mouse click at ({}, {}), terminal size: {:?}", mouse_row, mouse_col, terminal.size());
+
+					// Calculate which table row was clicked based on mouse coordinates
+					// Layout structure:
+					// - chunks[0]: header (4 lines) - Constraint::Length(4)
+					// - chunks[1]: table body - Constraint::Min(5)
+					// - chunks[2]: status footer (5 lines) - Constraint::Length(5)
+					// - chunks[3]: keybinding hints (1 line) - Constraint::Length(1)
+					//
+					// Within the table chunk (chunks[1]):
+					// - 1 line for top border
+					// - 1 line for column headers
+					// - Data rows start after that
+
+					let header_height = 4; // chunks[0] height
+					let table_border_and_header = 2; // top border + column header
+					let table_data_start = header_height + table_border_and_header;
+
+					debug!("Table calculation: header_height={}, table_data_start={}", header_height, table_data_start);
+
+					// Check if click is within the table area vertically
+					if mouse_row >= table_data_start {
+						let clicked_row = (mouse_row - table_data_start) as usize;
+						let total = pres.file_table.len();
+
+						debug!("Clicked row calculation: mouse_row={}, clicked_row={}, total_files={}",
+							   mouse_row, clicked_row, total);
+
+						// Simple bounds check - just verify we're clicking on a valid row
+						if total > 0 && clicked_row < total {
+							selected_idx = clicked_row;
+							table_state.select(Some(selected_idx));
+							debug!("✅ Mouse selection successful: selected_idx={}", selected_idx);
+
+							// Update status to show mouse selection worked
+							pres = pres.clone().with_status(format!("Selected row {} via mouse", selected_idx + 1));
+						} else {
+							debug!("❌ Mouse click outside valid range: clicked_row={}, total={}", clicked_row, total);
+						}
+					} else {
+						debug!("❌ Mouse click above table area: mouse_row={}, table_data_start={}", mouse_row, table_data_start);
+					}
+				}
 			}
 		}
 		// Update progress and re-render every loop
@@ -564,6 +623,7 @@ enum Action {
 	PageDown,
 	Home,
 	End,
+	SelectRow(u16, u16), // row, column
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -803,7 +863,10 @@ fn draw_enhanced(
 		Span::styled("Home", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
 		Span::raw(" top  "),
 		Span::styled("End", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-		Span::raw(" bottom"),
+		Span::raw(" bottom  "),
+		// Mouse support
+		Span::styled("🖱️", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+		Span::raw(" click to select"),
 	];
 
 	// Only show Enter/Esc hints when in path input mode
@@ -1027,13 +1090,34 @@ fn handle_events(
 					}
 				}
 				Event::Mouse(me) => {
-					use crossterm::event::MouseEventKind::*;
+					use crossterm::event::MouseEventKind;
+					// Debug: Log ALL mouse events to see what we're receiving
+					info!("Mouse event: {:?} at ({}, {})", me.kind, me.row, me.column);
+
 					if !in_input {
 						match me.kind {
-							ScrollUp => actions.push(Action::Up),
-							ScrollDown => actions.push(Action::Down),
-							_ => {}
+							MouseEventKind::ScrollUp => {
+								debug!("Mouse scroll up");
+								actions.push(Action::Up);
+							}
+							MouseEventKind::ScrollDown => {
+								debug!("Mouse scroll down");
+								actions.push(Action::Down);
+							}
+							MouseEventKind::Down(button) => {
+								debug!("Mouse button down: {:?}", button);
+								// Only handle left mouse button clicks for row selection
+								if matches!(button, crossterm::event::MouseButton::Left) {
+									debug!("Left mouse button clicked at ({}, {})", me.row, me.column);
+									actions.push(Action::SelectRow(me.row, me.column));
+								}
+							}
+							_ => {
+								debug!("Other mouse event: {:?}", me.kind);
+							}
 						}
+					} else {
+						debug!("Mouse event ignored (in input mode)");
 					}
 				}
 				Event::Resize(_, _) => {
