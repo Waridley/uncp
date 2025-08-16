@@ -45,6 +45,20 @@ fn ensure_dir(dir: &PathBuf) -> anyhow::Result<()> {
 fn main() {
 	let opts = Opts::parse();
 	init_tracing(opts.verbose.saturating_sub(opts.quiet));
+
+	// Initialize rayon thread pool for CPU-bound work
+	let nthreads = std::thread::available_parallelism()
+		.map(|n| n.get())
+		.unwrap_or(4);
+
+	rayon::ThreadPoolBuilder::new()
+		.num_threads(nthreads)
+		.thread_name(|i| format!("uncp-cli-rayon-{}", i))
+		.build_global()
+		.expect("Failed to initialize rayon thread pool");
+
+	tracing::info!("Initialized rayon thread pool with {} threads", nthreads);
+
 	smol::block_on(async move {
 		if let Err(e) = run(opts).await {
 			eprintln!("error: {e}");

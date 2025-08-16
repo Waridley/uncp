@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use blake3;
 use polars::prelude::*;
+use rayon::prelude::*;
 
 use crate::data::ScanState;
 use crate::error::{SystemError, SystemResult};
@@ -83,26 +84,61 @@ impl SystemRunner for ContentHashSystem {
 				reason: e.to_string(),
 			})?;
 
-		let mut upd_paths: Vec<String> = Vec::with_capacity(paths_series.len());
-		let mut upd_hashes: Vec<Option<String>> = Vec::with_capacity(paths_series.len());
-		let mut upd_flags: Vec<bool> = Vec::with_capacity(paths_series.len());
+		// Collect paths into a vector for parallel processing
+		let paths: Vec<String> = paths_series.into_iter().flatten().map(|s| s.to_string()).collect();
 
-		for path in paths_series.into_iter().flatten() {
-			upd_paths.push(path.to_string());
-			// Try hashing; on error, skip but leave hashed=false so it can retry or be logged later
-			match smol::fs::read(path).await {
-				Ok(bytes) => {
-					let digest = blake3::hash(&bytes);
-					upd_hashes.push(Some(digest.to_hex().to_string()));
-					upd_flags.push(true);
-					trace!("Hashed {}", path);
+		// Use rayon for parallel hashing with smol::unblock to bridge async/sync
+		let total_files = paths.len();
+		let callback = self.callback.clone();
+
+		let results = smol::unblock(move || {
+			use std::sync::atomic::{AtomicUsize, Ordering};
+			let completed = AtomicUsize::new(0);
+
+			// Process files in parallel using rayon
+			let results: Vec<_> = paths.par_iter().map(|path| {
+				let path_str = path.clone();
+				// Synchronous file reading and hashing for rayon
+				let result = match std::fs::read(path) {
+					Ok(bytes) => {
+						let digest = blake3::hash(&bytes);
+						let hash = digest.to_hex().to_string();
+						trace!("Hashed {}", path);
+						(path_str, Some(hash), true)
+					}
+					Err(_) => {
+						warn!("Hashing: failed to read {}", path);
+						(path_str, None, false)
+					}
+				};
+
+				// Update progress
+				let current = completed.fetch_add(1, Ordering::Relaxed) + 1;
+				if let Some(ref cb) = callback {
+					cb(SystemProgress {
+						system_name: "ContentHash".to_string(),
+						total_items: total_files,
+						processed_items: current,
+						current_item: Some(path.clone()),
+						estimated_remaining: None,
+					});
 				}
-				Err(_) => {
-					upd_hashes.push(None);
-					upd_flags.push(false);
-					warn!("Hashing: failed to read {}", path);
-				}
-			}
+
+				result
+			}).collect();
+
+			results
+		}).await;
+
+		// Unpack results
+		let mut upd_paths = Vec::with_capacity(results.len());
+		let mut upd_hashes = Vec::with_capacity(results.len());
+		let mut upd_flags = Vec::with_capacity(results.len());
+
+		for (path, hash, flag) in results {
+			upd_paths.push(path);
+			upd_hashes.push(hash);
+			upd_flags.push(flag);
 		}
 
 		if upd_paths.is_empty() {

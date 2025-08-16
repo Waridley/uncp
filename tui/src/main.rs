@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use async_channel as channel;
 use async_executor::Executor;
-use easy_parallel::Parallel;
 use futures_lite::future;
+use rayon;
 
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;
@@ -44,58 +44,86 @@ fn main() -> std::io::Result<()> {
 
 	info!("Starting uncp TUI");
 
-	// Build a smol-compatible multithreaded executor (async-executor + easy-parallel)
-	let ex = Executor::new();
+	// Build a hybrid rayon + smol executor setup
+	let ex = std::sync::Arc::new(Executor::new());
 	let (signal, shutdown) = channel::unbounded::<()>();
+
+	// Configure rayon thread pool for CPU-bound work
 	let nthreads = std::thread::available_parallelism()
 		.map(|n| n.get())
 		.unwrap_or(4)
 		.max(2);
 
-	// Run executor worker threads and the TUI on the current thread
-	Parallel::new()
-		.each(0..nthreads, |_| future::block_on(ex.run(shutdown.recv())))
-		.finish(|| {
-			// Explicitly enable mouse support
-			let _ = execute!(
-				std::io::stdout(),
-				crossterm::event::EnableMouseCapture
-			);
+	// Initialize rayon with our desired thread count
+	rayon::ThreadPoolBuilder::new()
+		.num_threads(nthreads)
+		.thread_name(|i| format!("uncp-rayon-{}", i))
+		.build_global()
+		.expect("Failed to initialize rayon thread pool");
 
-			let mut terminal = ratatui::init();
-			let _ = run(&ex, &mut terminal);
+	info!("Initialized rayon thread pool with {} threads", nthreads);
 
-			// Disable mouse support on exit
-			let _ = execute!(
-				std::io::stdout(),
-				crossterm::event::DisableMouseCapture
-			);
-			ratatui::restore();
+	// Spawn smol executor threads for async I/O work
+	let executor_threads: Vec<_> = (0..2) // Use fewer threads for async work
+		.map(|i| {
+			let ex = ex.clone();
+			let shutdown = shutdown.clone();
+			std::thread::Builder::new()
+				.name(format!("uncp-smol-{}", i))
+				.spawn(move || {
+					future::block_on(ex.run(shutdown.recv()))
+				})
+				.expect("Failed to spawn smol executor thread")
+		})
+		.collect();
 
-			// Stop executor threads
-			drop(signal);
+	// Run the TUI on the main thread
+	{
+		// Explicitly enable mouse support
+		let _ = execute!(
+			std::io::stdout(),
+			crossterm::event::EnableMouseCapture
+		);
 
-			// Flush appender and print tail of log after UI restores
-			drop(guard);
-			if let Ok(s) = std::fs::read_to_string(&log_path) {
-				let tail: Vec<_> = s.lines().rev().take(80).collect();
-				println!("\n---- uncp TUI logs (last 80 lines) ----");
-				for line in tail.into_iter().rev() {
-					println!("{line}");
-				}
-				println!(
-					"---------------------------------------\nLog file: {}",
-					log_path.display()
-				);
-			} else {
-				println!("Logs at: {}", log_path.display());
-			}
-		});
+		let mut terminal = ratatui::init();
+		let _ = run(&ex, &mut terminal);
+
+		// Disable mouse support on exit
+		let _ = execute!(
+			std::io::stdout(),
+			crossterm::event::DisableMouseCapture
+		);
+		ratatui::restore();
+	}
+
+	// Signal shutdown to all worker threads
+	drop(signal);
+
+	// Wait for executor threads to finish
+	for thread in executor_threads {
+		let _ = thread.join();
+	}
+
+	// Flush appender and print tail of log after UI restores
+	drop(guard);
+	if let Ok(s) = std::fs::read_to_string(&log_path) {
+		let tail: Vec<_> = s.lines().rev().take(80).collect();
+		println!("\n---- uncp TUI logs (last 80 lines) ----");
+		for line in tail.into_iter().rev() {
+			println!("{line}");
+		}
+		println!(
+			"---------------------------------------\nLog file: {}",
+			log_path.display()
+		);
+	} else {
+		println!("Logs at: {}", log_path.display());
+	}
 
 	Ok(())
 }
 
-fn run(_ex: &Executor<'_>, terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<()> {
+fn run(_ex: &std::sync::Arc<Executor<'_>>, terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<()> {
 	// UI state
 	let mut current_path = PathBuf::from(".");
 	let mut in_path_input = false;

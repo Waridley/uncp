@@ -1501,12 +1501,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c7a8fb8a9fbf66c1f703fe16184d10ca0ee9d23be5b4436400408ba54a95005"
 
 [[package]]
-name = "easy-parallel"
-version = "3.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2afbb9b0aef60e4f0d2b18129b6c0dff035a6f7dbbd17c2f38c1432102ee223c"
-
-[[package]]
 name = "either"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5477,6 +5471,7 @@ dependencies = [
  "num_cpus",
  "ordered-float",
  "polars",
+ "rayon",
  "serde",
  "serde_json",
  "similar",
@@ -5501,6 +5496,7 @@ dependencies = [
  "clap",
  "dirs 5.0.1",
  "futures-lite 2.3.0",
+ "rayon",
  "smol 2.0.2",
  "tracing",
  "tracing-subscriber",
@@ -5524,9 +5520,9 @@ dependencies = [
  "async-executor",
  "crossterm 0.29.0",
  "dirs 5.0.1",
- "easy-parallel",
  "futures-lite 2.3.0",
  "ratatui",
+ "rayon",
  "smol 1.3.0",
  "tracing",
  "tracing-appender",
