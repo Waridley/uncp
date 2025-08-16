@@ -112,19 +112,24 @@ impl CacheManager {
 		}
 
 		// Save state DataFrame and relations atomically
+		use crate::relations::{IdenticalHashes, SimilarityGroups, PairwiseRelations};
+
 		atomic_write_parquet(self.state_path(), state.clone().data.clone())?;
-		atomic_write_parquet(
-			self.rel_hashes_path(),
-			relations.clone().hash_relations.clone(),
-		)?;
-		atomic_write_parquet(
-			self.rel_groups_path(),
-			relations.clone().similarity_groups.clone(),
-		)?;
-		atomic_write_parquet(
-			self.rel_pairs_path(),
-			relations.clone().pairwise_relations.clone(),
-		)?;
+
+		// Save hash relations if they exist
+		if let Some(hash_relations) = relations.get::<IdenticalHashes>() {
+			atomic_write_parquet(self.rel_hashes_path(), hash_relations.clone())?;
+		}
+
+		// Save similarity groups if they exist
+		if let Some(similarity_groups) = relations.get::<SimilarityGroups>() {
+			atomic_write_parquet(self.rel_groups_path(), similarity_groups.clone())?;
+		}
+
+		// Save pairwise relations if they exist
+		if let Some(pairwise_relations) = relations.get::<PairwiseRelations>() {
+			atomic_write_parquet(self.rel_pairs_path(), pairwise_relations.clone())?;
+		}
 
 		// Save metadata JSON last
 		let meta = ScanMetadata {
@@ -199,16 +204,29 @@ impl CacheManager {
 		let started =
 			chrono::DateTime::from_timestamp_millis(meta.last_scan_time).unwrap_or_else(Utc::now);
 
+		use crate::relations::{IdenticalHashes, SimilarityGroups, PairwiseRelations};
+
 		let state = ScanState {
 			data: state_df,
 			scan_id: meta.scan_id,
 			scan_started: started,
 		};
-		let relations = RelationStore {
-			hash_relations: rel_hashes,
-			similarity_groups: rel_groups,
-			pairwise_relations: rel_pairs,
-		};
+
+		let mut relations = RelationStore::new();
+
+		// Insert the loaded relations using type-safe keys
+		if rel_hashes.height() > 0 {
+			relations.insert::<IdenticalHashes>(rel_hashes)
+				.map_err(|e| CacheError::InvalidationFailed { reason: e.to_string() })?;
+		}
+		if rel_groups.height() > 0 {
+			relations.insert::<SimilarityGroups>(rel_groups)
+				.map_err(|e| CacheError::InvalidationFailed { reason: e.to_string() })?;
+		}
+		if rel_pairs.height() > 0 {
+			relations.insert::<PairwiseRelations>(rel_pairs)
+				.map_err(|e| CacheError::InvalidationFailed { reason: e.to_string() })?;
+		}
 
 		Ok(Some((state, relations)))
 	}
@@ -304,7 +322,7 @@ mod tests {
 		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
 
 		let state = create_test_state();
-		let relations = RelationStore::new().unwrap();
+		let relations = RelationStore::new();
 
 		// Save
 		let result = cache_manager.save_all(&state, &relations);
@@ -387,7 +405,7 @@ mod tests {
 		let hashes = vec![Some("abc123".to_string())];
 		state.update_hashes(paths, hashes).unwrap();
 
-		let relations = RelationStore::new().unwrap();
+		let relations = RelationStore::new();
 
 		// Save and load
 		cache_manager.save_all(&state, &relations).unwrap();
@@ -406,7 +424,7 @@ mod tests {
 		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
 
 		let state = create_test_state();
-		let relations = RelationStore::new().unwrap();
+		let relations = RelationStore::new();
 
 		// Save multiple times to test atomic operations
 		for i in 0..3 {
@@ -428,7 +446,7 @@ mod tests {
 		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
 
 		let state = create_test_state();
-		let relations = RelationStore::new().unwrap();
+		let relations = RelationStore::new();
 
 		let before_save = Utc::now().timestamp_millis();
 		cache_manager.save_all(&state, &relations).unwrap();
@@ -450,7 +468,7 @@ mod tests {
 
 		// Create first state with some files
 		let state1 = create_test_state();
-		let relations1 = RelationStore::new().unwrap();
+		let relations1 = RelationStore::new();
 
 		// Save first state
 		cache_manager.save_all(&state1, &relations1).unwrap();
@@ -472,7 +490,7 @@ mod tests {
 			},
 		];
 		state2.add_files(files2).unwrap();
-		let relations2 = RelationStore::new().unwrap();
+		let relations2 = RelationStore::new();
 
 		// Save second state (should merge with first)
 		cache_manager.save_all(&state2, &relations2).unwrap();

@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::cache::CacheManager;
+use crate::persist::CacheManager;
 use crate::data::{RelationStore, ScanState};
 use crate::error::{DetectorError, DetectorResult};
 use crate::memory::{MemoryManager, Settings};
@@ -413,7 +413,7 @@ impl DuplicateDetector {
 		let memory_settings = config.memory_settings.clone();
 		Ok(Self {
 			state: ScanState::new()?,
-			relations: RelationStore::new()?,
+			relations: RelationStore::new(),
 			scheduler: SystemScheduler::new(),
 			memory_mgr: MemoryManager::with_settings(memory_settings)?,
 			config,
@@ -608,7 +608,7 @@ impl DuplicateDetector {
 	pub fn clear_state(&mut self) {
 		info!("Detector: clearing all state");
 		self.state = ScanState::new().expect("Failed to create new ScanState");
-		self.relations = RelationStore::new().expect("Failed to create new RelationStore");
+		self.relations = RelationStore::new();
 		// Clear any pending systems in the scheduler
 		self.scheduler = SystemScheduler::new();
 	}

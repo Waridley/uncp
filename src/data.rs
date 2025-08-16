@@ -9,6 +9,9 @@ use uuid::Uuid;
 
 use crate::error::{DetectorError, DetectorResult};
 
+// Re-export RelationStore from the relations module
+pub use crate::relations::RelationStore;
+
 /// File type classification for content-based categorization.
 ///
 /// This enum categorizes files based on their content type and extension,
@@ -363,202 +366,8 @@ pub struct FileRecord {
 	pub file_type: FileKind,
 }
 
-/// Storage for relationships and similarity data between files.
-///
-/// `RelationStore` manages the complex relationships discovered during duplicate
-/// detection, including exact matches (same content hash) and similarity relationships
-/// (perceptual hashing, text similarity, etc.). It uses separate DataFrames for
-/// different types of relationships to optimize query performance.
-///
-/// ## Relationship Types
-///
-/// ### Hash Relations
-/// Files with identical content hashes (exact duplicates):
-/// - **`hash`**: Content hash value (string)
-/// - **`paths`**: List of file paths with this hash
-/// - **`count`**: Number of files sharing this hash
-/// - **`total_size`**: Combined size of all duplicate files
-///
-/// ### Similarity Groups
-/// Files grouped by similarity analysis (near-duplicates):
-/// - **`group_id`**: Unique identifier for similarity group
-/// - **`paths`**: List of file paths in this group
-/// - **`similarity_type`**: Type of similarity (perceptual, text, etc.)
-/// - **`confidence`**: Similarity confidence score (0.0-1.0)
-///
-/// ### Pairwise Relations
-/// Individual file-to-file relationships:
-/// - **`path1`**: First file path
-/// - **`path2`**: Second file path
-/// - **`relation_type`**: Type of relationship (duplicate, similar, etc.)
-/// - **`score`**: Relationship strength score
-///
-/// ## Performance Characteristics
-///
-/// - **Indexed Access**: Fast lookups by hash, group ID, or file path
-/// - **Efficient Joins**: Optimized for combining with ScanState data
-/// - **Memory Efficient**: Columnar storage minimizes overhead for large datasets
-/// - **Lazy Evaluation**: Supports complex queries without loading all data
-///
-/// ## Usage Examples
-///
-/// ```rust
-/// use uncp::data::RelationStore;
-///
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// // Create new relation store
-/// let mut relations = RelationStore::new()?;
-///
-/// // Add hash-based duplicate relationship
-/// relations.add_hash_relation("abc123", vec![
-///     "/path/to/file1.txt".to_string(),
-///     "/path/to/file2.txt".to_string(),
-/// ])?;
-///
-/// // Query for duplicate groups
-/// let duplicates = relations.get_duplicate_groups()?;
-/// println!("Found {} duplicate groups", duplicates.height());
-///
-/// // Find files similar to a specific file
-/// let similar = relations.find_similar_files("/path/to/target.jpg")?;
-/// println!("Found {} similar files", similar.height());
-/// # Ok(())
-/// # }
-/// ```
-///
-/// ## Integration with ScanState
-///
-/// RelationStore is designed to work seamlessly with ScanState:
-/// - File paths serve as foreign keys between the structures
-/// - Queries can efficiently join data from both stores
-/// - Updates maintain referential integrity automatically
-#[derive(Debug, Clone)]
-pub struct RelationStore {
-	/// Hash-based exact duplicate relationships indexed by content hash
-	pub hash_relations: DataFrame,
-	/// Similarity groups for near-duplicate detection with confidence scores
-	pub similarity_groups: DataFrame,
-	/// Pairwise file relationships with detailed similarity metrics
-	pub pairwise_relations: DataFrame,
-}
 
-impl RelationStore {
-	/// Create a new empty RelationStore
-	pub fn new() -> DetectorResult<Self> {
-		Ok(RelationStore {
-			hash_relations: Self::create_hash_relations_schema()?,
-			similarity_groups: Self::create_similarity_groups_schema()?,
-			pairwise_relations: Self::create_pairwise_relations_schema()?,
-		})
-	}
 
-	fn create_hash_relations_schema() -> PolarsResult<DataFrame> {
-		let file_paths = ListChunked::full_null_with_dtype("file_paths", 0, &DataType::String);
-		DataFrame::new(vec![
-			Series::new("hash_value", Vec::<String>::new()),
-			Series::new("hash_type", Vec::<String>::new()),
-			file_paths.into_series(),
-			Series::new("first_seen", Vec::<i64>::new()),
-			Series::new("file_count", Vec::<u32>::new()),
-		])
-	}
-
-	fn create_similarity_groups_schema() -> PolarsResult<DataFrame> {
-		let file_paths = ListChunked::full_null_with_dtype("file_paths", 0, &DataType::String);
-		DataFrame::new(vec![
-			Series::new("group_id", Vec::<String>::new()),
-			Series::new("group_type", Vec::<String>::new()),
-			file_paths.into_series(),
-			Series::new("metadata", Vec::<String>::new()),
-			Series::new("created_at", Vec::<i64>::new()),
-			Series::new("similarity_threshold", Vec::<f64>::new()),
-		])
-	}
-
-	fn create_pairwise_relations_schema() -> PolarsResult<DataFrame> {
-		df! {
-			"path_a" => Vec::<String>::new(),
-			"path_b" => Vec::<String>::new(),
-			"relation_type" => Vec::<String>::new(),
-			"score" => Vec::<f64>::new(),
-			"data" => Vec::<String>::new(),
-			"computed_at" => Vec::<i64>::new(),
-		}
-	}
-
-	/// Merge another relation store into this one, combining relationship data
-	pub fn merge_with(&mut self, other: &RelationStore) -> DetectorResult<()> {
-		use polars::prelude::concat;
-
-		// Merge hash relations
-		if other.hash_relations.height() > 0 {
-			if self.hash_relations.height() == 0 {
-				self.hash_relations = other.hash_relations.clone();
-			} else {
-				let combined = concat(
-					[
-						other.hash_relations.clone().lazy(),
-						self.hash_relations.clone().lazy(),
-					],
-					UnionArgs::default(),
-				)
-				.map_err(DetectorError::Polars)?
-				.unique(None, UniqueKeepStrategy::First)
-				.collect()
-				.map_err(DetectorError::Polars)?;
-				self.hash_relations = combined;
-			}
-		}
-
-		// Merge similarity groups
-		if other.similarity_groups.height() > 0 {
-			if self.similarity_groups.height() == 0 {
-				self.similarity_groups = other.similarity_groups.clone();
-			} else {
-				let combined = concat(
-					[
-						other.similarity_groups.clone().lazy(),
-						self.similarity_groups.clone().lazy(),
-					],
-					UnionArgs::default(),
-				)
-				.map_err(DetectorError::Polars)?
-				.unique(None, UniqueKeepStrategy::First)
-				.collect()
-				.map_err(DetectorError::Polars)?;
-				self.similarity_groups = combined;
-			}
-		}
-
-		// Merge pairwise relations
-		if other.pairwise_relations.height() > 0 {
-			if self.pairwise_relations.height() == 0 {
-				self.pairwise_relations = other.pairwise_relations.clone();
-			} else {
-				let combined = concat(
-					[
-						other.pairwise_relations.clone().lazy(),
-						self.pairwise_relations.clone().lazy(),
-					],
-					UnionArgs::default(),
-				)
-				.map_err(DetectorError::Polars)?
-				.unique(None, UniqueKeepStrategy::First)
-				.collect()
-				.map_err(DetectorError::Polars)?;
-				self.pairwise_relations = combined;
-			}
-		}
-
-		Ok(())
-	}
-}
-
-impl Default for RelationStore {
-	fn default() -> Self {
-		Self::new().expect("Failed to create default RelationStore")
-	}
-}
 
 /// Duplicate group result
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -681,6 +490,6 @@ mod tests {
 	#[test]
 	fn test_relation_store_creation() {
 		let store = RelationStore::new();
-		assert!(store.is_ok());
+		assert!(store.is_empty());
 	}
 }

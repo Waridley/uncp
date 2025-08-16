@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use tracing::{subscriber::set_global_default, Level};
+use tracing::{debug, subscriber::set_global_default, Level};
 use tracing_subscriber::EnvFilter;
 fn init_tracing(verbosity: u8) {
 	// Map -q/-v to tracing levels; default INFO
@@ -56,6 +56,8 @@ fn main() {
 async fn run(opts: Opts) -> anyhow::Result<()> {
 	match opts.command {
 		Command::Scan { path, hash: _, include, exclude } => {
+			debug!(?include, ?exclude, "Scan requested for {}", path.display());
+			
 			// Create detector config with path filtering
 			let mut config = DetectorConfig::default();
 			if !include.is_empty() || !exclude.is_empty() {
@@ -133,7 +135,7 @@ fn print_summary(detector: &DuplicateDetector) {
 	}
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(version, about = "uncp CLI (proof-of-concept)")]
 pub struct Opts {
 	/// Increase verbosity (-v, -vv). Default INFO.
@@ -147,7 +149,7 @@ pub struct Opts {
 	pub command: Command,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 pub enum Command {
 	/// Scan a path; optionally hash contents
 	Scan {

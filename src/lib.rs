@@ -12,7 +12,7 @@
 //! - **Core Data Layer**: [`data`] - Polars DataFrame-based data structures for file metadata and relationships
 //! - **Detection Engine**: [`detector`] - Main API for duplicate detection with configurable processing
 //! - **Processing Systems**: [`systems`] - Modular pipeline for file discovery, hashing, and similarity analysis
-//! - **Caching Layer**: [`cache`] - Persistent storage using Parquet format with atomic operations
+//! - **Caching Layer**: [`persist`] - Persistent storage using Parquet format with atomic operations
 //! - **Memory Management**: [`memory`] - LRU caching with configurable limits and system-aware defaults
 //! - **Background Engine**: [`engine`] - Async processing engine with progress callbacks and command interface
 //! - **Query Interface**: [`query`] - High-level API for accessing processed data and relationships
@@ -285,6 +285,28 @@ pub mod detector;
 /// for display in CLI/GUI interfaces.
 pub mod error;
 
+/// Type-safe relationship management system for file relationships.
+///
+/// This module provides a flexible system for storing and retrieving different types
+/// of file relationships using compile-time type safety. Each relation type is
+/// identified by a unique type that implements the `RelationKey` trait.
+///
+/// Key features:
+/// - **Type Safety**: Relations are retrieved using compile-time type checking
+/// - **Extensibility**: New relation types can be added without modifying core code
+/// - **Metadata**: Each relation includes descriptive metadata and versioning
+/// - **Performance**: Efficient storage and retrieval using TypeId-based indexing
+///
+/// Example relation types:
+/// - `IdenticalHashes`: Files with identical content hashes
+/// - `SameFileName`: Files with identical names but different paths
+/// - `SimilarContent`: Files with similar content based on analysis
+/// - `SameSize`: Files with identical sizes
+///
+/// The system supports arbitrary relation types defined by users or plugins,
+/// making it highly extensible for domain-specific duplicate detection needs.
+pub mod relations;
+
 // Processing pipeline - modular systems for file analysis
 
 /// Modular processing systems for the file analysis pipeline.
@@ -337,7 +359,7 @@ pub mod systems;
 ///
 /// Cache files are stored in a user-configurable directory with automatic cleanup
 /// of old entries based on configurable retention policies.
-pub mod cache;
+pub mod persist;
 
 /// LRU caching with configurable limits and system-aware memory management.
 ///
@@ -487,3 +509,4 @@ pub use detector::{DetectorConfig, DuplicateDetector, PathFilter};
 pub use error::{DetectorError, DetectorResult};
 pub use query::Query;
 pub use engine::{EngineMode};
+pub use relations::{RelationKey, RelationMetadata, IdenticalHashes, SameFileName, SameSize, SimilarityGroups, PairwiseRelations};

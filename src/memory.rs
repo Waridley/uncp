@@ -11,15 +11,19 @@ use tracing::{debug, trace};
 
 /// File contents stored in memory
 #[derive(Debug, Clone)]
-pub struct FileContents {
-	pub data: Vec<u8>,
-	pub size: usize,
+pub struct FileBytes {
+	pub data: Box<[u8]>,
 }
 
-impl FileContents {
-	pub fn new(data: Vec<u8>) -> Self {
-		let size = data.len();
-		Self { data, size }
+impl FileBytes {
+	pub fn len(&self) -> usize {
+		self.data.len()
+	}
+}
+
+impl FileBytes {
+	pub fn new(data: impl Into<Box<[u8]>>) -> Self {
+		Self { data: data.into() }
 	}
 }
 
@@ -31,9 +35,7 @@ pub struct MemoryManager {
 	/// Current memory usage in bytes
 	current_bytes: AtomicUsize,
 	/// LRU cache for file contents (lock-free optimizations welcome)
-	file_cache: LruCache<PathBuf, FileContents>,
-	/// Maximum number of files to keep in cache
-	max_files: usize,
+	file_cache: LruCache<PathBuf, FileBytes>,
 }
 
 impl MemoryManager {
@@ -57,7 +59,6 @@ impl MemoryManager {
 			max_bytes: settings.max_total_loaded_bytes,
 			current_bytes: AtomicUsize::new(0),
 			file_cache: LruCache::new(cache_capacity),
-			max_files: settings.num_max_loaded_files,
 		})
 	}
 
@@ -80,9 +81,9 @@ impl MemoryManager {
 		let mut freed = 0;
 		while !self.can_allocate(bytes - freed) && !self.file_cache.is_empty() {
 			if let Some((_, contents)) = self.file_cache.pop_lru() {
-				freed += contents.size;
+				freed += contents.len();
 				self.current_bytes
-					.fetch_sub(contents.size, Ordering::Relaxed);
+					.fetch_sub(contents.len(), Ordering::Relaxed);
 			}
 		}
 
@@ -105,28 +106,21 @@ impl MemoryManager {
 	}
 
 	/// Get file contents from cache
-	pub fn get_file(&mut self, path: &PathBuf) -> Option<&FileContents> {
+	pub fn get_file(&mut self, path: &PathBuf) -> Option<&FileBytes> {
 		self.file_cache.get(path)
 	}
 
 	/// Put file contents in cache
-	pub fn put_file(&mut self, path: PathBuf, contents: FileContents) -> DetectorResult<()> {
+	pub fn put_file(&mut self, path: PathBuf, contents: FileBytes) -> DetectorResult<()> {
 		// Try to allocate memory for the new file
-		self.try_allocate(contents.size)?;
-
-		// If cache is at capacity, remove LRU item
-		if self.file_cache.len() >= self.max_files {
-			if let Some((_, old_contents)) = self.file_cache.pop_lru() {
-				self.deallocate(old_contents.size);
-			}
-		}
+		self.try_allocate(contents.len())?;
 
 		self.file_cache.put(path, contents);
 		Ok(())
 	}
 
 	/// Load file contents into cache
-	pub async fn load_file(&mut self, path: PathBuf) -> DetectorResult<&FileContents> {
+	pub async fn load_file(&mut self, path: PathBuf) -> DetectorResult<&FileBytes> {
 		// Check if already in cache
 		if self.file_cache.contains(&path) {
 			return Ok(self.file_cache.get(&path).unwrap());
@@ -134,7 +128,7 @@ impl MemoryManager {
 
 		// Load file from disk
 		let data = smol::fs::read(&path).await?;
-		let contents = FileContents::new(data);
+		let contents = FileBytes::new(data);
 
 		// Put in cache
 		self.put_file(path.clone(), contents)?;
@@ -157,7 +151,7 @@ impl MemoryManager {
 	pub fn cache_stats(&self) -> CacheStats {
 		CacheStats {
 			current_files: self.file_cache.len(),
-			max_files: self.max_files,
+			max_files: self.file_cache.cap(),
 			current_bytes: self.current_usage(),
 			max_bytes: self.max_bytes,
 			hit_ratio: 0.0, // Would need to track hits/misses for real implementation
@@ -215,7 +209,7 @@ impl Settings {
 #[derive(Debug, Clone)]
 pub struct CacheStats {
 	pub current_files: usize,
-	pub max_files: usize,
+	pub max_files: NonZeroUsize,
 	pub current_bytes: usize,
 	pub max_bytes: usize,
 	pub hit_ratio: f64,
@@ -270,7 +264,7 @@ mod tests {
 	fn test_cache_stats_display() {
 		let stats = CacheStats {
 			current_files: 5,
-			max_files: 10,
+			max_files: NonZeroUsize::new(10).unwrap(),
 			current_bytes: 1024 * 1024, // 1MB
 			max_bytes: 2 * 1024 * 1024, // 2MB
 			hit_ratio: 0.75,
