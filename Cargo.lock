@@ -5700,7 +5700,7 @@ dependencies = [
  "futures-lite 2.3.0",
  "ratatui",
  "rayon",
- "smol 1.3.0",
+ "smol 2.0.2",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
