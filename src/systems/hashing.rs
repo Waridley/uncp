@@ -53,10 +53,59 @@ impl SystemRunner for ContentHashSystem {
 
 		// Apply scope filter if configured
 		let to_hash_df = if let Some(ref pref) = self.scope_prefix {
+			// Filter by idx/gen using DirEntryId descendant check
+			let s = to_hash_df
+				.column("path")
+				.and_then(|c| c.struct_())
+				.map_err(|e| SystemError::ExecutionFailed {
+					system: self.name().into(),
+					reason: e.to_string(),
+				})?;
+			let idx_series = s
+				.field_by_name("idx")
+				.map_err(|e| SystemError::ExecutionFailed {
+					system: self.name().into(),
+					reason: e.to_string(),
+				})?
+				.clone();
+			let gen_series = s
+				.field_by_name("gen")
+				.map_err(|e| SystemError::ExecutionFailed {
+					system: self.name().into(),
+					reason: e.to_string(),
+				})?
+				.clone();
+			let idx_ca = idx_series
+				.u64()
+				.map_err(|e| SystemError::ExecutionFailed {
+					system: self.name().into(),
+					reason: e.to_string(),
+				})?
+				.clone();
+			let gen_ca = gen_series
+				.u64()
+				.map_err(|e| SystemError::ExecutionFailed {
+					system: self.name().into(),
+					reason: e.to_string(),
+				})?
+				.clone();
+			let mut mask = Vec::with_capacity(to_hash_df.height());
+			for i in 0..to_hash_df.height() {
+				let keep = if let (Some(idx), Some(r#gen)) = (idx_ca.get(i), gen_ca.get(i)) {
+					if let Some(id) =
+						crate::paths::DirEntryId::from_raw_parts(idx as usize, r#gen as usize)
+					{
+						id.is_descendant_of_path(pref)
+					} else {
+						false
+					}
+				} else {
+					false
+				};
+				mask.push(keep);
+			}
 			to_hash_df
-				.lazy()
-				.filter(col("path").str().starts_with(lit(pref.as_str())))
-				.collect()
+				.filter(&BooleanChunked::from_slice("mask", &mask))
 				.map_err(|e| SystemError::ExecutionFailed {
 					system: self.name().into(),
 					reason: e.to_string(),
@@ -71,25 +120,56 @@ impl SystemRunner for ContentHashSystem {
 			return Ok(());
 		}
 
-		// Collect paths
-		let paths_series = to_hash_df
+		// Collect paths: resolve Struct[idx, gen] to Strings
+		let s = to_hash_df
 			.column("path")
 			.map_err(|e| SystemError::ExecutionFailed {
 				system: self.name().into(),
 				reason: e.to_string(),
 			})?
-			.str()
+			.struct_()
 			.map_err(|e| SystemError::ExecutionFailed {
 				system: self.name().into(),
 				reason: e.to_string(),
 			})?;
-
-		// Collect paths into a vector for parallel processing
-		let paths: Vec<String> = paths_series
-			.into_iter()
-			.flatten()
-			.map(|s| s.to_string())
-			.collect();
+		let idx_series = s
+			.field_by_name("idx")
+			.map_err(|e| SystemError::ExecutionFailed {
+				system: self.name().into(),
+				reason: e.to_string(),
+			})?
+			.clone();
+		let gen_series = s
+			.field_by_name("gen")
+			.map_err(|e| SystemError::ExecutionFailed {
+				system: self.name().into(),
+				reason: e.to_string(),
+			})?
+			.clone();
+		let idx_ca = idx_series
+			.u64()
+			.map_err(|e| SystemError::ExecutionFailed {
+				system: self.name().into(),
+				reason: e.to_string(),
+			})?
+			.clone();
+		let gen_ca = gen_series
+			.u64()
+			.map_err(|e| SystemError::ExecutionFailed {
+				system: self.name().into(),
+				reason: e.to_string(),
+			})?
+			.clone();
+		let mut paths: Vec<String> = Vec::with_capacity(to_hash_df.height());
+		for i in 0..to_hash_df.height() {
+			if let (Some(idx), Some(r#gen)) = (idx_ca.get(i), gen_ca.get(i)) {
+				if let Some(id) =
+					crate::paths::DirEntryId::from_raw_parts(idx as usize, r#gen as usize)
+				{
+					paths.push(id.to_string());
+				}
+			}
+		}
 
 		// Use rayon for parallel hashing with smol::unblock to bridge async/sync
 		let total_files = paths.len();
@@ -153,12 +233,28 @@ impl SystemRunner for ContentHashSystem {
 			return Ok(());
 		}
 
-		// Create update frame
-		let update_df = df! {
-			"path" => upd_paths,
-			"blake3_hash" => upd_hashes,
-			"hashed" => upd_flags,
-		}
+		// Create update frame: convert paths back to Struct[idx, gen]
+		let (idxs, gens): (Vec<u64>, Vec<u64>) = upd_paths
+			.iter()
+			.map(|p| {
+				let (i, g) = crate::paths::intern_path(p).raw_parts();
+				(i as u64, g as u64)
+			})
+			.unzip();
+		let path_series = StructChunked::new(
+			"path",
+			&[Series::new("idx", idxs), Series::new("gen", gens)],
+		)
+		.map_err(|e| SystemError::ExecutionFailed {
+			system: self.name().into(),
+			reason: e.to_string(),
+		})?
+		.into_series();
+		let update_df = DataFrame::new(vec![
+			path_series,
+			Series::new("blake3_hash", upd_hashes),
+			Series::new("hashed", upd_flags),
+		])
 		.map_err(|e| SystemError::ExecutionFailed {
 			system: self.name().into(),
 			reason: e.to_string(),
@@ -169,7 +265,18 @@ impl SystemRunner for ContentHashSystem {
 			.data
 			.clone()
 			.lazy()
-			.left_join(update_df.clone().lazy(), col("path"), col("path"))
+			.join(
+				update_df.clone().lazy(),
+				[
+					col("path").struct_().field_by_index(0), // idx component
+					col("path").struct_().field_by_index(1), // generation component
+				],
+				[
+					col("path").struct_().field_by_index(0), // idx component
+					col("path").struct_().field_by_index(1), // generation component
+				],
+				JoinArgs::new(JoinType::Left),
+			)
 			.with_columns([
 				when(col("blake3_hash_right").is_not_null())
 					.then(col("blake3_hash_right"))

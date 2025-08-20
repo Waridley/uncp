@@ -9,7 +9,7 @@ use crate::persist::CacheManager;
 use crate::query::Query;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
-use crate::paths::default_cache_dir;
+use crate::paths::{DirEntryId, default_cache_dir};
 
 use crate::systems::{ContentHashSystem, FileDiscoverySystem, SystemProgress, SystemScheduler};
 use tracing::info;
@@ -633,30 +633,93 @@ impl DuplicateDetector {
 	}
 
 	pub fn files_pending_hash_under_prefix<S: AsRef<str>>(&self, prefix: S) -> usize {
-		use polars::prelude::*;
 		let pref = prefix.as_ref();
-		self.state
-			.data
-			.clone()
-			.lazy()
-			.filter(col("hashed").eq(lit(false)))
-			.filter(col("path").str().starts_with(lit(pref)))
-			.collect()
-			.map(|df| df.height())
-			.unwrap_or(0)
+		let df = &self.state.data;
+		if df.height() == 0 {
+			return 0;
+		}
+		let s = match df.column("path").and_then(|c| c.struct_()) {
+			Ok(s) => s,
+			Err(_) => return 0,
+		};
+		let idx_series = match s.field_by_name("idx") {
+			Ok(series) => series.clone(),
+			Err(_) => return 0,
+		};
+		let gen_series = match s.field_by_name("gen") {
+			Ok(series) => series.clone(),
+			Err(_) => return 0,
+		};
+		let idx_ca = match idx_series.u64() {
+			Ok(ca) => ca.clone(),
+			Err(_) => return 0,
+		};
+		let gen_ca = match gen_series.u64() {
+			Ok(ca) => ca.clone(),
+			Err(_) => return 0,
+		};
+		let hashed = match df.column("hashed").and_then(|c| c.bool()) {
+			Ok(ca) => ca.clone(),
+			Err(_) => return 0,
+		};
+		let mut count = 0usize;
+		for i in 0..df.height() {
+			if let (Some(idx), Some(r#gen), Some(is_hashed)) =
+				(idx_ca.get(i), gen_ca.get(i), hashed.get(i))
+			{
+				if !is_hashed {
+					if let Some(id) =
+						crate::paths::DirEntryId::from_raw_parts(idx as usize, r#gen as usize)
+					{
+						if id.is_descendant_of_path(pref) {
+							count += 1;
+						}
+					}
+				}
+			}
+		}
+		count
 	}
 
 	pub fn files_under_prefix<S: AsRef<str>>(&self, prefix: S) -> usize {
-		use polars::prelude::*;
 		let pref = prefix.as_ref();
-		self.state
-			.data
-			.clone()
-			.lazy()
-			.filter(col("path").str().starts_with(lit(pref)))
-			.collect()
-			.map(|df| df.height())
-			.unwrap_or(0)
+		let df = &self.state.data;
+		if df.height() == 0 {
+			return 0;
+		}
+		let s = match df.column("path").and_then(|c| c.struct_()) {
+			Ok(s) => s,
+			Err(_) => return 0,
+		};
+		let idx_series = match s.field_by_name("idx") {
+			Ok(series) => series.clone(),
+			Err(_) => return 0,
+		};
+		let gen_series = match s.field_by_name("gen") {
+			Ok(series) => series.clone(),
+			Err(_) => return 0,
+		};
+		let idx_ca = match idx_series.u64() {
+			Ok(ca) => ca.clone(),
+			Err(_) => return 0,
+		};
+		let gen_ca = match gen_series.u64() {
+			Ok(ca) => ca.clone(),
+			Err(_) => return 0,
+		};
+		let mut count = 0usize;
+		for i in 0..df.height() {
+			if let (Some(idx), Some(r#gen)) = (idx_ca.get(i), gen_ca.get(i)) {
+				if let Some(id) =
+					crate::paths::DirEntryId::from_raw_parts(idx as usize, r#gen as usize)
+				{
+					if id.is_descendant_of_path(pref) {
+						count += 1;
+					}
+				}
+			}
+		}
+		count
 	}
 
 	/// Get file information filtered by path prefix, sorted by size (descending)
@@ -664,47 +727,55 @@ impl DuplicateDetector {
 	pub fn files_under_prefix_sorted_by_size<S: AsRef<str>>(
 		&self,
 		prefix: S,
-	) -> Vec<(String, u64, String, bool)> {
-		use polars::prelude::*;
+	) -> Vec<(DirEntryId, u64, String, bool)> {
 		let pref = prefix.as_ref();
 
-		let result = self
-			.state
-			.data
-			.clone()
-			.lazy()
-			.filter(col("path").str().starts_with(lit(pref)))
-			.select([col("path"), col("size"), col("file_type"), col("hashed")])
-			.collect();
-
-		match result {
-			Ok(df) => {
-				let mut files = Vec::new();
-				if df.height() > 0 {
-					let paths = df.column("path").unwrap().str().unwrap();
-					let sizes = df.column("size").unwrap().u64().unwrap();
-					let file_types = df.column("file_type").unwrap().str().unwrap();
-					let hashed_flags = df.column("hashed").unwrap().bool().unwrap();
-
-					for (((path_opt, size_opt), file_type_opt), hashed_opt) in paths
-						.into_iter()
-						.zip(sizes.into_iter())
-						.zip(file_types.into_iter())
-						.zip(hashed_flags.into_iter())
-					{
-						if let (Some(path), Some(size), Some(file_type), Some(hashed)) =
-							(path_opt, size_opt, file_type_opt, hashed_opt)
-						{
-							files.push((path.to_string(), size, file_type.to_string(), hashed));
-						}
+		// Extract columns directly and filter by actual path descendant relationship
+		let df = &self.state.data;
+		let mut files = Vec::new();
+		if df.height() == 0 {
+			return files;
+		}
+		let paths = match df.column("path").and_then(|c| c.struct_()) {
+			Ok(s) => s,
+			Err(_) => return files,
+		};
+		let idx_series = match paths.field_by_name("idx") {
+			Ok(series) => series.clone(),
+			Err(_) => return files,
+		};
+		let gen_series = match paths.field_by_name("gen") {
+			Ok(series) => series.clone(),
+			Err(_) => return files,
+		};
+		let idx_vals: Vec<Option<u64>> = match idx_series.u64() {
+			Ok(ca) => ca.into_iter().collect(),
+			Err(_) => return files,
+		};
+		let gen_vals: Vec<Option<u64>> = match gen_series.u64() {
+			Ok(ca) => ca.into_iter().collect(),
+			Err(_) => return files,
+		};
+		let sizes = df.column("size").unwrap().u64().unwrap();
+		let file_types = df.column("file_type").unwrap().str().unwrap();
+		let hashed_flags = df.column("hashed").unwrap().bool().unwrap();
+		for i in 0..df.height() {
+			if let (Some(idx), Some(generation), Some(size), Some(file_type), Some(hashed)) = (
+				idx_vals[i],
+				gen_vals[i],
+				sizes.get(i),
+				file_types.get(i),
+				hashed_flags.get(i),
+			) {
+				if let Some(path) = DirEntryId::from_raw_parts(idx as usize, generation as usize) {
+					if path.is_descendant_of_path(pref) {
+						files.push((path, size, file_type.to_string(), hashed));
 					}
 				}
-				// Sort by size in descending order
-				files.sort_by(|a, b| b.1.cmp(&a.1));
-				files
 			}
-			Err(_) => Vec::new(),
 		}
+		files.sort_by(|a, b| b.1.cmp(&a.1));
+		files
 	}
 
 	/// Clean up stale cache entries by removing deleted files and marking modified files for re-processing

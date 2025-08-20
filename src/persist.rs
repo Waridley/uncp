@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use crate::data::{RelationStore, ScanState};
 use crate::error::{CacheError, CacheResult};
+use crate::paths::{DirEntryId, intern_path};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanMetadata {
@@ -21,6 +22,52 @@ pub struct ScanMetadata {
 #[derive(Debug)]
 pub struct CacheManager {
 	pub cache_dir: PathBuf,
+}
+
+// Convert in-memory DirEntryId struct path column to Utf8 for serialization
+fn df_with_string_paths(mut df: DataFrame) -> PolarsResult<DataFrame> {
+	if let Ok(col) = df.column("path") {
+		if let Ok(s) = col.struct_() {
+			let idx_ca = s.field_by_name("idx")?.u64()?.clone();
+			let gen_ca = s.field_by_name("gen")?.u64()?.clone();
+			let mut strings = Vec::with_capacity(df.height());
+			for i in 0..df.height() {
+				let idx = idx_ca.get(i).expect("idx not null") as usize;
+				let r#gen = gen_ca.get(i).expect("gen not null") as usize;
+				let id = DirEntryId::from_raw_parts_unchecked(idx, r#gen);
+				strings.push(id.to_string());
+			}
+			let new_series = Series::new("path", strings);
+			df.replace("path", new_series)?;
+		}
+	}
+	Ok(df)
+}
+
+// Convert serialized Utf8 path column to DirEntryId Struct for in-memory use
+fn df_with_interned_paths(mut df: DataFrame) -> PolarsResult<DataFrame> {
+	if let Ok(col) = df.column("path") {
+		if matches!(col.dtype(), DataType::String) {
+			let ca = col.str().expect("path column should be Utf8 when on-disk");
+			let (mut idxs, mut gens): (Vec<u64>, Vec<u64>) = (
+				Vec::with_capacity(df.height()),
+				Vec::with_capacity(df.height()),
+			);
+			for opt_s in ca.into_iter() {
+				let s = opt_s.expect("path should not be null");
+				let (i, g) = intern_path(s).raw_parts();
+				idxs.push(i as u64);
+				gens.push(g as u64);
+			}
+			let struct_series = StructChunked::new(
+				"path",
+				&[Series::new("idx", idxs), Series::new("gen", gens)],
+			)?
+			.into_series();
+			df.replace("path", struct_series)?;
+		}
+	}
+	Ok(df)
 }
 
 impl CacheManager {
@@ -111,14 +158,20 @@ impl CacheManager {
 		// Save state DataFrame and relations atomically
 		use crate::relations::{IdenticalHashes, SimilarityGroups};
 
-		atomic_write_parquet(self.state_path(), state.clone().data.clone())?;
+		// Convert path column to Utf8 for serialization
+		let state_df = df_with_string_paths(state.clone().data.clone()).map_err(|e| {
+			CacheError::InvalidationFailed {
+				reason: e.to_string(),
+			}
+		})?;
+		atomic_write_parquet(self.state_path(), state_df)?;
 
-		// Save hash relations if they exist
+		// Save hash relations if they exist (already use Utf8 paths)
 		if let Some(hash_relations) = relations.get::<IdenticalHashes>() {
 			atomic_write_parquet(self.rel_hashes_path(), hash_relations.clone())?;
 		}
 
-		// Save similarity groups if they exist
+		// Save similarity groups if they exist (already use Utf8 paths)
 		if let Some(similarity_groups) = relations.get::<SimilarityGroups>() {
 			atomic_write_parquet(self.rel_groups_path(), similarity_groups.clone())?;
 		}
@@ -171,7 +224,12 @@ impl CacheManager {
 
 		// Load state DF
 		let f = File::open(self.state_path())?;
-		let state_df = ParquetReader::new(f).finish()?;
+		let mut state_df = ParquetReader::new(f).finish()?;
+		// Convert Utf8 path column from disk back to Struct DirEntryId for in-memory use
+		state_df =
+			df_with_interned_paths(state_df).map_err(|e| CacheError::InvalidationFailed {
+				reason: e.to_string(),
+			})?;
 
 		// Load relations
 		let rel_hashes = if self.rel_hashes_path().exists() {
@@ -488,10 +546,29 @@ mod tests {
 
 		// Verify all file paths are present
 		let path_col = merged_state.data.column("path").unwrap();
-		let paths: Vec<String> = path_col
-			.iter()
-			.map(|v| v.to_string().trim_matches('"').to_string())
-			.collect();
+		let paths: Vec<String> = match path_col.dtype() {
+			DataType::String => path_col
+				.str()
+				.unwrap()
+				.into_iter()
+				.map(|opt| opt.unwrap().to_string())
+				.collect(),
+			DataType::Struct(_) => {
+				let s = path_col.struct_().unwrap();
+				let idx_ca = s.field_by_name("idx").unwrap().u64().unwrap().clone();
+				let gen_ca = s.field_by_name("gen").unwrap().u64().unwrap().clone();
+				let mut out = Vec::with_capacity(idx_ca.len());
+				for i in 0..idx_ca.len() {
+					let idx = idx_ca.get(i).unwrap() as usize;
+					let r#gen = gen_ca.get(i).unwrap() as usize;
+					out.push(
+						crate::paths::DirEntryId::from_raw_parts_unchecked(idx, r#gen).to_string(),
+					);
+				}
+				out
+			}
+			_ => unreachable!("unexpected dtype for path column"),
+		};
 
 		assert!(paths.contains(&"/test/file1.txt".to_string()));
 		assert!(paths.contains(&"/test/file2.jpg".to_string()));

@@ -774,7 +774,7 @@ fn draw_enhanced(
 			let size_str = format_file_size(*size);
 			let hashed_str = if *hashed { "✓" } else { "○" };
 			Row::new(vec![
-				Cell::from(path.as_str()),
+				Cell::from(format!("{path}")),
 				Cell::from(size_str),
 				Cell::from(file_type.as_str()),
 				Cell::from(hashed_str),

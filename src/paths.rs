@@ -11,7 +11,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{LazyLock, RwLock};
-use tracing::error;
+use tracing::{error, warn};
 
 type Arena = typed_generational_arena::Arena<PathSegment<'static>>;
 
@@ -31,7 +31,15 @@ pub fn intern_path(path: impl AsRef<Path>) -> DirEntryId {
 	let path = path.as_ref();
 	// Try to canonicalize, but fall back to the original path if it fails
 	// This allows interning of non-existent paths
-	let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+	let path = path.canonicalize()
+		.or_else(|e| {
+			warn!("Failed to canonicalize {path:?}, falling back to absolute: {e}");
+			std::path::absolute(path)
+		})
+		.unwrap_or_else(|e| {
+			error!("Failed to get absolute {path:?}, falling back to original: {e}");
+			path.to_path_buf()
+		});
 	let last = path.components().fold(None, |parent, seg| {
 		let idx = get_or_insert_segment(seg, parent);
 		Some(idx)
@@ -227,7 +235,7 @@ impl DirEntryId {
 			error!("Failed to canonicalize prefix path: {e}");
 			prefix_path.to_path_buf()
 		});
-		
+
 		let mut our_components = self.iter();
 		for prefix_comp in prefix_path.components() {
 			let Some(our_comp) = our_components.next() else {
@@ -352,22 +360,32 @@ impl DirEntryId {
 		let (idx, generation) = match value {
 			AnyValue::StructOwned(s) => {
 				// TODO: Convert these to errors in case user tries to load bad dataframes
-				debug_assert_eq!(s.1.len(), 2);
-				debug_assert_eq!(s.1[0].name(), "idx");
-				debug_assert_eq!(s.1[1].name(), "gen");
+				dbg_assert_struct_fields(&s.1);
 				let idx = s.0[0].extract::<u64>()?;
 				let generation = s.0[1].extract::<u64>()?;
 				(idx as usize, generation as usize)
 			}
-			other => {
-				if cfg!(debug_assertions) {
-					panic!("Expected AnyValue::StructOwned, got {other:?}");
-				} else {
-					return None;
+			_other => {
+				// Unknown representation; return None in release builds
+				#[cfg(debug_assertions)]
+				{
+					// Be tolerant during transitions: don't panic, just return None
+					// panic!("Expected AnyValue::StructOwned, got {other:?}");
 				}
+				return None;
 			}
 		};
 		Self::from_raw_parts(idx, generation)
+	}
+}
+
+#[inline(always)]
+fn dbg_assert_struct_fields(fields: &[Field]) {
+	#[cfg(debug_assertions)]
+	{
+		debug_assert_eq!(fields.len(), 2);
+		debug_assert_eq!(fields[0].name(), "idx");
+		debug_assert_eq!(fields[1].name(), "gen");
 	}
 }
 

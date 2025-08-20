@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::DuplicateDetector;
+use crate::paths::DirEntryId;
 
 #[derive(Debug, Clone, Default)]
 pub struct PresentationState {
@@ -13,7 +14,7 @@ pub struct PresentationState {
 	// Optional: pending hash count for the most recent path filter, if provided by engine
 	pub pending_hash_scoped: Option<usize>,
 	// File table data: (path, size, file_type, hashed)
-	pub file_table: Vec<(String, u64, String, bool)>,
+	pub file_table: Vec<(DirEntryId, u64, String, bool)>,
 	// Current path filter for the file table
 	pub current_path_filter: String,
 }

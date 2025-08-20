@@ -1,6 +1,7 @@
 //! Core data structures using Polars DataFrames
 
 use chrono::{DateTime, Utc};
+use polars::datatypes::{DataType, Field};
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -8,6 +9,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::error::{DetectorError, DetectorResult};
+use crate::paths::intern_path;
 
 // Re-export RelationStore from the relations module
 pub use crate::relations::RelationStore;
@@ -81,13 +83,13 @@ impl std::fmt::Display for FileKind {
 ///
 /// The internal DataFrame contains the following columns:
 ///
-/// - **`path`**: File path as string (primary key)
-/// - **`size`**: File size in bytes (u64)
-/// - **`modified`**: Last modification timestamp (`DateTime<Utc>`)
-/// - **`file_type`**: Detected file type (FileKind enum)
-/// - **`hash`**: Content hash (optional Blake3 hash as string)
-/// - **`hash_computed`**: Whether hash has been computed (boolean)
-/// - **`scan_id`**: Scan session identifier (u32)
+/// - `path`: File path as DirEntryId (Struct[idx: u64, gen: u64])
+/// - `size`: File size in bytes (u64)
+/// - `modified`: Last modification timestamp (`DateTime<Utc>`)
+/// - `file_type`: Detected file type (FileKind enum)
+/// - `hash`: Content hash (optional Blake3 hash as string)
+/// - `hash_computed`: Whether hash has been computed (boolean)
+/// - `scan_id`: Scan session identifier (u32)
 ///
 /// ## Performance Characteristics
 ///
@@ -148,27 +150,24 @@ impl ScanState {
 
 	/// Create the schema for the main DataFrame
 	fn create_empty_dataframe() -> PolarsResult<DataFrame> {
-		df! {
-			// Core file identity and metadata
-			"path" => Vec::<String>::new(),
-			"size" => Vec::<u64>::new(),
-			"modified" => Vec::<i64>::new(), // Unix timestamp in nanoseconds
-			"file_type" => Vec::<String>::new(),
-
-			// Processing state flags (ECS-style components)
-			"content_loaded" => Vec::<bool>::new(),
-			"hashed" => Vec::<bool>::new(),
-			"similarity_computed" => Vec::<bool>::new(),
-
-			// Scan metadata
-			"scan_id" => Vec::<u32>::new(),
-			"last_processed" => Vec::<i64>::new(),
-
-			// Hash data (optional, filled by systems)
-			"blake3_hash" => Vec::<Option<String>>::new(),
-			"perceptual_hash" => Vec::<Option<String>>::new(),
-			"text_hash" => Vec::<Option<String>>::new(),
-		}
+		let path_dtype = DataType::Struct(vec![
+			Field::new("idx", DataType::UInt64),
+			Field::new("gen", DataType::UInt64),
+		]);
+		DataFrame::new(vec![
+			Series::new_empty("path", &path_dtype),
+			Series::new("size", Vec::<u64>::new()),
+			Series::new("modified", Vec::<i64>::new()), // Unix timestamp in nanoseconds
+			Series::new("file_type", Vec::<String>::new()),
+			Series::new("content_loaded", Vec::<bool>::new()),
+			Series::new("hashed", Vec::<bool>::new()),
+			Series::new("similarity_computed", Vec::<bool>::new()),
+			Series::new("scan_id", Vec::<u32>::new()),
+			Series::new("last_processed", Vec::<i64>::new()),
+			Series::new("blake3_hash", Vec::<Option<String>>::new()),
+			Series::new("perceptual_hash", Vec::<Option<String>>::new()),
+			Series::new("text_hash", Vec::<Option<String>>::new()),
+		])
 	}
 
 	/// Add files to the scan state, deduplicating by path
@@ -201,10 +200,20 @@ impl ScanState {
 
 	/// Convert file records to DataFrame
 	fn files_to_dataframe(&self, files: Vec<FileRecord>) -> PolarsResult<DataFrame> {
-		let paths: Vec<String> = files
+		// Build Struct path column from idx/gen components
+		let (idxs, gens): (Vec<u64>, Vec<u64>) = files
 			.iter()
-			.map(|f| f.path.to_string_lossy().to_string())
-			.collect();
+			.map(|f| {
+				let (i, g) = intern_path(&f.path).raw_parts();
+				(i as u64, g as u64)
+			})
+			.unzip();
+		let path_series = StructChunked::new(
+			"path",
+			&[Series::new("idx", idxs), Series::new("gen", gens)],
+		)?
+		.into_series();
+
 		let sizes: Vec<u64> = files.iter().map(|f| f.size).collect();
 		let modified: Vec<i64> = files
 			.iter()
@@ -225,20 +234,20 @@ impl ScanState {
 		let perceptual_hash: Vec<Option<String>> = vec![None; files.len()];
 		let text_hash: Vec<Option<String>> = vec![None; files.len()];
 
-		df! {
-			"path" => paths,
-			"size" => sizes,
-			"modified" => modified,
-			"file_type" => file_types,
-			"content_loaded" => content_loaded,
-			"hashed" => hashed,
-			"similarity_computed" => similarity_computed,
-			"scan_id" => scan_ids,
-			"last_processed" => last_processed,
-			"blake3_hash" => blake3_hash,
-			"perceptual_hash" => perceptual_hash,
-			"text_hash" => text_hash,
-		}
+		DataFrame::new(vec![
+			path_series,
+			Series::new("size", sizes),
+			Series::new("modified", modified),
+			Series::new("file_type", file_types),
+			Series::new("content_loaded", content_loaded),
+			Series::new("hashed", hashed),
+			Series::new("similarity_computed", similarity_computed),
+			Series::new("scan_id", scan_ids),
+			Series::new("last_processed", last_processed),
+			Series::new("blake3_hash", blake3_hash),
+			Series::new("perceptual_hash", perceptual_hash),
+			Series::new("text_hash", text_hash),
+		])
 	}
 
 	/// Get files that need processing by a specific system
@@ -282,37 +291,71 @@ impl ScanState {
 			));
 		}
 
-		let paths_len = paths.len();
-
-		// Create update frame
-		let update_df = df! {
-			"path" => paths,
-			"blake3_hash" => hashes,
-			"hashed" => vec![true; paths_len],
+		let height = self.data.height();
+		if height == 0 {
+			return Ok(());
 		}
-		.map_err(DetectorError::Polars)?;
-
-		// Merge updates into state using a left join and coalesce
-		let updated = self
+		// Build lookup from (idx,gen) -> row index
+		let pcol = self
 			.data
-			.clone()
-			.lazy()
-			.left_join(update_df.clone().lazy(), col("path"), col("path"))
-			.with_columns([
-				when(col("blake3_hash_right").is_not_null())
-					.then(col("blake3_hash_right"))
-					.otherwise(col("blake3_hash"))
-					.alias("blake3_hash"),
-				when(col("hashed_right").is_not_null())
-					.then(col("hashed_right"))
-					.otherwise(col("hashed"))
-					.alias("hashed"),
-			])
-			.select([all().exclude(["blake3_hash_right", "hashed_right"])])
-			.collect()
+			.column("path")
+			.map_err(DetectorError::Polars)?
+			.struct_()
 			.map_err(DetectorError::Polars)?;
+		let idx_ca = pcol
+			.field_by_name("idx")
+			.map_err(DetectorError::Polars)?
+			.u64()
+			.map_err(DetectorError::Polars)?
+			.clone();
+		let gen_ca = pcol
+			.field_by_name("gen")
+			.map_err(DetectorError::Polars)?
+			.u64()
+			.map_err(DetectorError::Polars)?
+			.clone();
+		let mut row_by_key: HashMap<(u64, u64), usize> = HashMap::with_capacity(height);
+		for i in 0..height {
+			let idx = idx_ca.get(i).expect("idx not null");
+			let r#gen = gen_ca.get(i).expect("gen not null");
+			row_by_key.insert((idx, r#gen), i);
+		}
 
-		self.data = updated;
+		// Prepare new column values
+		let mut blake_series = self
+			.data
+			.column("blake3_hash")
+			.map_err(DetectorError::Polars)?
+			.str()
+			.map_err(DetectorError::Polars)?
+			.into_iter()
+			.map(|opt| opt.map(|s| s.to_string()))
+			.collect::<Vec<Option<String>>>();
+		let mut hashed_series = self
+			.data
+			.column("hashed")
+			.map_err(DetectorError::Polars)?
+			.bool()
+			.map_err(DetectorError::Polars)?
+			.into_iter()
+			.map(|opt| opt.unwrap_or(false))
+			.collect::<Vec<bool>>();
+
+		for (p, h) in paths.iter().zip(hashes.into_iter()) {
+			let (i, g) = intern_path(p).raw_parts();
+			if let Some(&row) = row_by_key.get(&(i as u64, g as u64)) {
+				blake_series[row] = h;
+				hashed_series[row] = true;
+			}
+		}
+
+		// Replace columns
+		self.data
+			.replace("blake3_hash", Series::new("blake3_hash", blake_series))
+			.map_err(DetectorError::Polars)?;
+		self.data
+			.replace("hashed", Series::new("hashed", hashed_series))
+			.map_err(DetectorError::Polars)?;
 		Ok(())
 	}
 
