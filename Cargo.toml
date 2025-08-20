@@ -10,7 +10,7 @@ members = ["cli", "gui", "tui"]
 
 [workspace.dependencies]
 anyhow = "1.0.79"
-ordered-float = "4.2.0"
+ordered-float = "4.6.0"
 smol = "2.0.2"
 image = "0.24.0"
 tracing = "0.1.40"
