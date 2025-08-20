@@ -134,7 +134,10 @@ impl SystemContext {
 		self
 	}
 
-	pub fn with_cancellation_token(mut self, token: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+	pub fn with_cancellation_token(
+		mut self,
+		token: std::sync::Arc<std::sync::atomic::AtomicBool>,
+	) -> Self {
 		self.cancellation_token = token;
 		self
 	}
@@ -146,11 +149,13 @@ impl SystemContext {
 	}
 
 	pub fn is_cancelled(&self) -> bool {
-		self.cancellation_token.load(std::sync::atomic::Ordering::Relaxed)
+		self.cancellation_token
+			.load(std::sync::atomic::Ordering::Relaxed)
 	}
 
 	pub fn cancel(&self) {
-		self.cancellation_token.store(true, std::sync::atomic::Ordering::Relaxed);
+		self.cancellation_token
+			.store(true, std::sync::atomic::Ordering::Relaxed);
 	}
 }
 

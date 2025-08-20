@@ -250,7 +250,7 @@ impl ScanState {
 				return Err(DetectorError::Config(format!(
 					"Unknown system: {}",
 					system_name
-				)))
+				)));
 			}
 		};
 
@@ -365,9 +365,6 @@ pub struct FileRecord {
 	pub modified: DateTime<Utc>,
 	pub file_type: FileKind,
 }
-
-
-
 
 /// Duplicate group result
 #[derive(Debug, Clone, Serialize, Deserialize)]

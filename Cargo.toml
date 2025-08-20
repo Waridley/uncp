@@ -31,6 +31,9 @@ async-trait = "0.1.77"
 futures = "0.3.30"
 rayon = "1.9.0"
 
+# For benchmarks and testing
+rand = { version = "0.8", optional = true }
+
 # Hashing and similarity
 blake3 = "1.5.0"
 similar = "2.4.0"
@@ -65,6 +68,16 @@ futures-lite = "2"
 
 typed-generational-arena = "0.2.9"
 
+[features]
+default = []
+benchmarks = ["rand"]
+
 [dev-dependencies]
 tempfile = "3.8"
 smol-potat = "1.1"
+criterion = { version = "0.5", features = ["html_reports"] }
+rand = "0.8"
+
+[[bench]]
+name = "path_interning"
+harness = false

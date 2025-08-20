@@ -506,7 +506,9 @@ pub mod similarity;
 // Re-export main API types for convenient access
 pub use data::{RelationStore, ScanState};
 pub use detector::{DetectorConfig, DuplicateDetector, PathFilter};
+pub use engine::EngineMode;
 pub use error::{DetectorError, DetectorResult};
 pub use query::Query;
-pub use engine::{EngineMode};
-pub use relations::{RelationKey, RelationMetadata, IdenticalHashes, SameFileName, SameSize, SimilarityGroups};
+pub use relations::{
+	IdenticalHashes, RelationKey, RelationMetadata, SameFileName, SameSize, SimilarityGroups,
+};

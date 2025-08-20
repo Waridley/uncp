@@ -85,7 +85,11 @@ impl SystemRunner for ContentHashSystem {
 			})?;
 
 		// Collect paths into a vector for parallel processing
-		let paths: Vec<String> = paths_series.into_iter().flatten().map(|s| s.to_string()).collect();
+		let paths: Vec<String> = paths_series
+			.into_iter()
+			.flatten()
+			.map(|s| s.to_string())
+			.collect();
 
 		// Use rayon for parallel hashing with smol::unblock to bridge async/sync
 		let total_files = paths.len();
@@ -96,39 +100,43 @@ impl SystemRunner for ContentHashSystem {
 			let completed = AtomicUsize::new(0);
 
 			// Process files in parallel using rayon
-			let results: Vec<_> = paths.par_iter().map(|path| {
-				let path_str = path.clone();
-				// Synchronous file reading and hashing for rayon
-				let result = match std::fs::read(path) {
-					Ok(bytes) => {
-						let digest = blake3::hash(&bytes);
-						let hash = digest.to_hex().to_string();
-						trace!("Hashed {}", path);
-						(path_str, Some(hash), true)
-					}
-					Err(_) => {
-						warn!("Hashing: failed to read {}", path);
-						(path_str, None, false)
-					}
-				};
+			let results: Vec<_> = paths
+				.par_iter()
+				.map(|path| {
+					let path_str = path.clone();
+					// Synchronous file reading and hashing for rayon
+					let result = match std::fs::read(path) {
+						Ok(bytes) => {
+							let digest = blake3::hash(&bytes);
+							let hash = digest.to_hex().to_string();
+							trace!("Hashed {}", path);
+							(path_str, Some(hash), true)
+						}
+						Err(_) => {
+							warn!("Hashing: failed to read {}", path);
+							(path_str, None, false)
+						}
+					};
 
-				// Update progress
-				let current = completed.fetch_add(1, Ordering::Relaxed) + 1;
-				if let Some(ref cb) = callback {
-					cb(SystemProgress {
-						system_name: "ContentHash".to_string(),
-						total_items: total_files,
-						processed_items: current,
-						current_item: Some(path.clone()),
-						estimated_remaining: None,
-					});
-				}
+					// Update progress
+					let current = completed.fetch_add(1, Ordering::Relaxed) + 1;
+					if let Some(ref cb) = callback {
+						cb(SystemProgress {
+							system_name: "ContentHash".to_string(),
+							total_items: total_files,
+							processed_items: current,
+							current_item: Some(path.clone()),
+							estimated_remaining: None,
+						});
+					}
 
-				result
-			}).collect();
+					result
+				})
+				.collect();
 
 			results
-		}).await;
+		})
+		.await;
 
 		// Unpack results
 		let mut upd_paths = Vec::with_capacity(results.len());

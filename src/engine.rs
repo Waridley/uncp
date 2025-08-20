@@ -7,7 +7,7 @@ use futures_lite::future;
 use tracing::{info, warn};
 
 use crate::systems::SystemProgress;
-use crate::{paths::default_cache_dir, DuplicateDetector};
+use crate::{DuplicateDetector, paths::default_cache_dir};
 
 /// Commands for controlling the background processing engine.
 ///
@@ -230,7 +230,8 @@ impl BackgroundEngine {
 				info!("Engine: started in {:?} mode", mode);
 				let mut current_path: Option<PathBuf> = None;
 				let mut discovery_completed_for_path: Option<PathBuf> = None;
-				let cancellation_token = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+				let cancellation_token =
+					std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 				let mut engine_running = false;
 				// Save snapshots periodically to avoid losing too much work
 				let mut last_save = std::time::Instant::now();
@@ -258,14 +259,16 @@ impl BackgroundEngine {
 							EngineCommand::Start => {
 								engine_running = true;
 								// Reset cancellation token when starting
-								cancellation_token.store(false, std::sync::atomic::Ordering::Relaxed);
+								cancellation_token
+									.store(false, std::sync::atomic::Ordering::Relaxed);
 							}
 							EngineCommand::Pause => {
 								engine_running = false;
 							}
 							EngineCommand::Stop => {
 								// Cancel any ongoing operations and stop the engine
-								cancellation_token.store(true, std::sync::atomic::Ordering::Relaxed);
+								cancellation_token
+									.store(true, std::sync::atomic::Ordering::Relaxed);
 								engine_running = false;
 								break;
 							}
@@ -273,7 +276,8 @@ impl BackgroundEngine {
 								info!("Engine: clearing detector state");
 								detector.clear_state();
 								// Reset cancellation token when clearing state
-								cancellation_token.store(false, std::sync::atomic::Ordering::Relaxed);
+								cancellation_token
+									.store(false, std::sync::atomic::Ordering::Relaxed);
 							}
 							EngineCommand::LoadCache(dir) => {
 								let _ = evt_tx.send(EngineEvent::CacheLoading).await;
@@ -305,8 +309,11 @@ impl BackgroundEngine {
 								}
 							}
 							EngineCommand::SetPathFilter(filter) => {
-								info!("Engine: setting path filter with {} include patterns, {} exclude patterns",
-									filter.include_patterns.len(), filter.exclude_patterns.len());
+								info!(
+									"Engine: setting path filter with {} include patterns, {} exclude patterns",
+									filter.include_patterns.len(),
+									filter.exclude_patterns.len()
+								);
 								detector.config.path_filter = filter;
 							}
 							EngineCommand::ClearPathFilter => {
@@ -316,14 +323,16 @@ impl BackgroundEngine {
 						}
 					}
 
-					if engine_running && !cancellation_token.load(std::sync::atomic::Ordering::Relaxed) {
+					if engine_running
+						&& !cancellation_token.load(std::sync::atomic::Ordering::Relaxed)
+					{
 						// Check if there's work to do
 						let pending_hash_count = detector.files_pending_hash();
 						let _total_files = detector.total_files();
 
 						// Only run discovery if we have a path and haven't completed discovery for it yet
-						let needs_discovery = current_path.is_some()
-							&& discovery_completed_for_path != current_path;
+						let needs_discovery =
+							current_path.is_some() && discovery_completed_for_path != current_path;
 
 						let needs_hashing = pending_hash_count > 0;
 
@@ -355,7 +364,11 @@ impl BackgroundEngine {
 
 								// Run discovery for this path with cancellation support
 								let result = detector
-									.scan_with_progress_and_cancellation(p.clone(), discovery_progress, cancellation_token.clone())
+									.scan_with_progress_and_cancellation(
+										p.clone(),
+										discovery_progress,
+										cancellation_token.clone(),
+									)
 									.await;
 
 								// Check if discovery was cancelled

@@ -14,7 +14,7 @@ use ratatui::{
 	layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
 	style::{Color, Modifier, Style},
 	text::{Line, Span},
-	widgets::{Block, Borders, Clear, Paragraph, Table, Row, Cell, TableState, Wrap},
+	widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap},
 	Frame,
 };
 
@@ -69,9 +69,7 @@ fn main() -> std::io::Result<()> {
 			let shutdown = shutdown.clone();
 			std::thread::Builder::new()
 				.name(format!("uncp-smol-{}", i))
-				.spawn(move || {
-					future::block_on(ex.run(shutdown.recv()))
-				})
+				.spawn(move || future::block_on(ex.run(shutdown.recv())))
 				.expect("Failed to spawn smol executor thread")
 		})
 		.collect();
@@ -79,19 +77,13 @@ fn main() -> std::io::Result<()> {
 	// Run the TUI on the main thread
 	{
 		// Explicitly enable mouse support
-		let _ = execute!(
-			std::io::stdout(),
-			crossterm::event::EnableMouseCapture
-		);
+		let _ = execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
 
 		let mut terminal = ratatui::init();
 		let _ = run(&ex, &mut terminal);
 
 		// Disable mouse support on exit
-		let _ = execute!(
-			std::io::stdout(),
-			crossterm::event::DisableMouseCapture
-		);
+		let _ = execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
 		ratatui::restore();
 	}
 
@@ -122,7 +114,10 @@ fn main() -> std::io::Result<()> {
 	Ok(())
 }
 
-fn run(_ex: &std::sync::Arc<Executor<'_>>, terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<()> {
+fn run(
+	_ex: &std::sync::Arc<Executor<'_>>,
+	terminal: &mut ratatui::DefaultTerminal,
+) -> std::io::Result<()> {
 	// UI state
 	let mut current_path = PathBuf::from(".");
 	let mut in_path_input = false;
@@ -179,7 +174,14 @@ fn run(_ex: &std::sync::Arc<Executor<'_>>, terminal: &mut ratatui::DefaultTermin
 	let mut selected_idx: usize = 0;
 
 	loop {
-		for action in handle_events(in_path_input, in_filter_input, &mut input_buffer, &mut filter_include_text, &mut filter_exclude_text, &mut filter_input_mode)? {
+		for action in handle_events(
+			in_path_input,
+			in_filter_input,
+			&mut input_buffer,
+			&mut filter_include_text,
+			&mut filter_exclude_text,
+			&mut filter_input_mode,
+		)? {
 			match action {
 				Action::Quit => {
 					info!("Quitting...");
@@ -251,7 +253,9 @@ fn run(_ex: &std::sync::Arc<Executor<'_>>, terminal: &mut ratatui::DefaultTermin
 									new_path_str.to_string()
 								}
 							} else {
-								pres = pres.clone().with_status("Error: Could not determine home directory".to_string());
+								pres = pres.clone().with_status(
+									"Error: Could not determine home directory".to_string(),
+								);
 								// Stay in path input mode to allow correction
 								continue;
 							}
@@ -262,7 +266,10 @@ fn run(_ex: &std::sync::Arc<Executor<'_>>, terminal: &mut ratatui::DefaultTermin
 						// Validate the path exists
 						let new_path = PathBuf::from(&expanded_path_str);
 						if !new_path.exists() {
-							pres = pres.clone().with_status(format!("Error: Path '{}' does not exist", new_path.display()));
+							pres = pres.clone().with_status(format!(
+								"Error: Path '{}' does not exist",
+								new_path.display()
+							));
 							// Stay in path input mode to allow correction
 							continue;
 						}
@@ -285,8 +292,11 @@ fn run(_ex: &std::sync::Arc<Executor<'_>>, terminal: &mut ratatui::DefaultTermin
 						let _ = cmds.try_send(EngineCommand::SetPath(current_path.clone()));
 
 						// Apply current filter if any
-						if !current_filter.include_patterns.is_empty() || !current_filter.exclude_patterns.is_empty() {
-							let _ = cmds.try_send(EngineCommand::SetPathFilter(current_filter.clone()));
+						if !current_filter.include_patterns.is_empty()
+							|| !current_filter.exclude_patterns.is_empty()
+						{
+							let _ =
+								cmds.try_send(EngineCommand::SetPathFilter(current_filter.clone()));
 						}
 
 						// Start the scan
@@ -311,21 +321,31 @@ fn run(_ex: &std::sync::Arc<Executor<'_>>, terminal: &mut ratatui::DefaultTermin
 							.filter(|line| !line.is_empty())
 							.collect();
 
-						info!("Submitting filter with {} include, {} exclude patterns",
-							include_patterns.len(), exclude_patterns.len());
+						info!(
+							"Submitting filter with {} include, {} exclude patterns",
+							include_patterns.len(),
+							exclude_patterns.len()
+						);
 
 						// Create new filter from the pattern lists
-						match uncp::PathFilter::new(include_patterns.clone(), exclude_patterns.clone()) {
+						match uncp::PathFilter::new(
+							include_patterns.clone(),
+							exclude_patterns.clone(),
+						) {
 							Ok(new_filter) => {
 								current_filter = new_filter.clone();
 								in_filter_input = false;
 
-								let status_msg = if include_patterns.is_empty() && exclude_patterns.is_empty() {
-									"Filter cleared".to_string()
-								} else {
-									format!("Filter set: {} include, {} exclude patterns",
-										include_patterns.len(), exclude_patterns.len())
-								};
+								let status_msg =
+									if include_patterns.is_empty() && exclude_patterns.is_empty() {
+										"Filter cleared".to_string()
+									} else {
+										format!(
+											"Filter set: {} include, {} exclude patterns",
+											include_patterns.len(),
+											exclude_patterns.len()
+										)
+									};
 								pres = pres.clone().with_status(status_msg);
 
 								// Apply filter to engine
@@ -347,7 +367,9 @@ fn run(_ex: &std::sync::Arc<Executor<'_>>, terminal: &mut ratatui::DefaultTermin
 								input_buffer.clear();
 							}
 							Err(e) => {
-								pres = pres.clone().with_status(format!("Invalid filter pattern: {}", e));
+								pres = pres
+									.clone()
+									.with_status(format!("Invalid filter pattern: {}", e));
 								// Stay in filter input mode to allow correction
 							}
 						}
@@ -412,7 +434,12 @@ fn run(_ex: &std::sync::Arc<Executor<'_>>, terminal: &mut ratatui::DefaultTermin
 				}
 				Action::SelectRow(mouse_row, mouse_col) => {
 					// Debug: Always log mouse clicks to understand coordinates
-					debug!("Mouse click at ({}, {}), terminal size: {:?}", mouse_row, mouse_col, terminal.size());
+					debug!(
+						"Mouse click at ({}, {}), terminal size: {:?}",
+						mouse_row,
+						mouse_col,
+						terminal.size()
+					);
 
 					// Calculate which table row was clicked based on mouse coordinates
 					// Layout structure:
@@ -430,29 +457,46 @@ fn run(_ex: &std::sync::Arc<Executor<'_>>, terminal: &mut ratatui::DefaultTermin
 					let table_border_and_header = 2; // top border + column header
 					let table_data_start = header_height + table_border_and_header;
 
-					debug!("Table calculation: header_height={}, table_data_start={}", header_height, table_data_start);
+					debug!(
+						"Table calculation: header_height={}, table_data_start={}",
+						header_height, table_data_start
+					);
 
 					// Check if click is within the table area vertically
 					if mouse_row >= table_data_start {
 						let clicked_row = (mouse_row - table_data_start) as usize;
 						let total = pres.file_table.len();
 
-						debug!("Clicked row calculation: mouse_row={}, clicked_row={}, total_files={}",
-							   mouse_row, clicked_row, total);
+						debug!(
+							"Clicked row calculation: mouse_row={}, clicked_row={}, total_files={}",
+							mouse_row, clicked_row, total
+						);
 
 						// Simple bounds check - just verify we're clicking on a valid row
 						if total > 0 && clicked_row < total {
 							selected_idx = clicked_row;
 							table_state.select(Some(selected_idx));
-							debug!("✅ Mouse selection successful: selected_idx={}", selected_idx);
+							debug!(
+								"✅ Mouse selection successful: selected_idx={}",
+								selected_idx
+							);
 
 							// Update status to show mouse selection worked
-							pres = pres.clone().with_status(format!("Selected row {} via mouse", selected_idx + 1));
+							pres = pres.clone().with_status(format!(
+								"Selected row {} via mouse",
+								selected_idx + 1
+							));
 						} else {
-							debug!("❌ Mouse click outside valid range: clicked_row={}, total={}", clicked_row, total);
+							debug!(
+								"❌ Mouse click outside valid range: clicked_row={}, total={}",
+								clicked_row, total
+							);
 						}
 					} else {
-						debug!("❌ Mouse click above table area: mouse_row={}, table_data_start={}", mouse_row, table_data_start);
+						debug!(
+							"❌ Mouse click above table area: mouse_row={}, table_data_start={}",
+							mouse_row, table_data_start
+						);
 					}
 				}
 			}
@@ -470,15 +514,17 @@ fn run(_ex: &std::sync::Arc<Executor<'_>>, terminal: &mut ratatui::DefaultTermin
 						snap.total_files, snap.pending_hash
 					);
 					pres = snap;
-				// Clamp selection within bounds when data changes
-				let total = pres.file_table.len();
-				if total == 0 {
-					selected_idx = 0;
-					table_state.select(None);
-				} else {
-					if selected_idx >= total { selected_idx = total - 1; }
-					table_state.select(Some(selected_idx));
-				}
+					// Clamp selection within bounds when data changes
+					let total = pres.file_table.len();
+					if total == 0 {
+						selected_idx = 0;
+						table_state.select(None);
+					} else {
+						if selected_idx >= total {
+							selected_idx = total - 1;
+						}
+						table_state.select(Some(selected_idx));
+					}
 				}
 				EngineEvent::Started => {
 					debug!("TUI: Engine started");
@@ -692,10 +738,12 @@ fn draw_enhanced(
 	if current_filter.has_patterns() {
 		header_spans.push(Span::raw("  |  Filters: "));
 		header_spans.push(Span::styled(
-			format!("{}inc, {}exc",
+			format!(
+				"{}inc, {}exc",
 				current_filter.include_patterns.len(),
-				current_filter.exclude_patterns.len()),
-			Style::default().fg(Color::Yellow)
+				current_filter.exclude_patterns.len()
+			),
+			Style::default().fg(Color::Yellow),
 		));
 	}
 
@@ -734,12 +782,15 @@ fn draw_enhanced(
 		})
 		.collect();
 
-	let table = Table::new(rows, [
-		Constraint::Percentage(60), // Path
-		Constraint::Percentage(15), // Size
-		Constraint::Percentage(15), // Type
-		Constraint::Percentage(10), // Hashed
-	])
+	let table = Table::new(
+		rows,
+		[
+			Constraint::Percentage(60), // Path
+			Constraint::Percentage(15), // Size
+			Constraint::Percentage(15), // Type
+			Constraint::Percentage(10), // Hashed
+		],
+	)
 	.header(header)
 	.row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
 	.block(Block::default().borders(Borders::ALL).title(title));
@@ -867,29 +918,84 @@ fn draw_enhanced(
 				.add_modifier(Modifier::BOLD),
 		),
 		// App control
-		Span::styled("q", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::styled(
+			"q",
+			Style::default()
+				.fg(Color::Green)
+				.add_modifier(Modifier::BOLD),
+		),
 		Span::raw(" quit  "),
-		Span::styled("r", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::styled(
+			"r",
+			Style::default()
+				.fg(Color::Green)
+				.add_modifier(Modifier::BOLD),
+		),
 		Span::raw(" refresh  "),
-		Span::styled("s", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::styled(
+			"s",
+			Style::default()
+				.fg(Color::Green)
+				.add_modifier(Modifier::BOLD),
+		),
 		Span::raw(" scan  "),
-		Span::styled("h", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::styled(
+			"h",
+			Style::default()
+				.fg(Color::Green)
+				.add_modifier(Modifier::BOLD),
+		),
 		Span::raw(" hash  "),
-		Span::styled("p", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::styled(
+			"p",
+			Style::default()
+				.fg(Color::Green)
+				.add_modifier(Modifier::BOLD),
+		),
 		Span::raw(" path  "),
-		Span::styled("f", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::styled(
+			"f",
+			Style::default()
+				.fg(Color::Green)
+				.add_modifier(Modifier::BOLD),
+		),
 		Span::raw(" filter  "),
 		// Table navigation
-		Span::styled("↑/↓", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::styled(
+			"↑/↓",
+			Style::default()
+				.fg(Color::Green)
+				.add_modifier(Modifier::BOLD),
+		),
 		Span::raw(" move  "),
-		Span::styled("PgUp/PgDn", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::styled(
+			"PgUp/PgDn",
+			Style::default()
+				.fg(Color::Green)
+				.add_modifier(Modifier::BOLD),
+		),
 		Span::raw(" page  "),
-		Span::styled("Home", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::styled(
+			"Home",
+			Style::default()
+				.fg(Color::Green)
+				.add_modifier(Modifier::BOLD),
+		),
 		Span::raw(" top  "),
-		Span::styled("End", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+		Span::styled(
+			"End",
+			Style::default()
+				.fg(Color::Green)
+				.add_modifier(Modifier::BOLD),
+		),
 		Span::raw(" bottom  "),
 		// Mouse support
-		Span::styled("🖱️", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+		Span::styled(
+			"🖱️",
+			Style::default()
+				.fg(Color::Cyan)
+				.add_modifier(Modifier::BOLD),
+		),
 		Span::raw(" click to select"),
 	];
 
@@ -897,9 +1003,19 @@ fn draw_enhanced(
 	if in_path_input {
 		hint_spans.extend_from_slice(&[
 			Span::raw("  "),
-			Span::styled("Enter", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+			Span::styled(
+				"Enter",
+				Style::default()
+					.fg(Color::Green)
+					.add_modifier(Modifier::BOLD),
+			),
 			Span::raw(" confirm  "),
-			Span::styled("Esc", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+			Span::styled(
+				"Esc",
+				Style::default()
+					.fg(Color::Green)
+					.add_modifier(Modifier::BOLD),
+			),
 			Span::raw(" cancel"),
 		]);
 	}
@@ -962,7 +1078,9 @@ fn render_filter_dialog(
 	// Include patterns column
 	let include_active = matches!(input_mode, FilterInputMode::Include);
 	let include_style = if include_active {
-		Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+		Style::default()
+			.fg(Color::Yellow)
+			.add_modifier(Modifier::BOLD)
 	} else {
 		Style::default().fg(Color::White)
 	};
@@ -995,7 +1113,9 @@ fn render_filter_dialog(
 	// Exclude patterns column
 	let exclude_active = matches!(input_mode, FilterInputMode::Exclude);
 	let exclude_style = if exclude_active {
-		Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+		Style::default()
+			.fg(Color::Yellow)
+			.add_modifier(Modifier::BOLD)
 	} else {
 		Style::default().fg(Color::White)
 	};
@@ -1071,8 +1191,12 @@ fn handle_events(
 								KeyCode::Backspace => {
 									// Remove character from the active text buffer
 									match filter_input_mode {
-										FilterInputMode::Include => { filter_include_text.pop(); }
-										FilterInputMode::Exclude => { filter_exclude_text.pop(); }
+										FilterInputMode::Include => {
+											filter_include_text.pop();
+										}
+										FilterInputMode::Exclude => {
+											filter_exclude_text.pop();
+										}
 									}
 								}
 								KeyCode::Char(c) => {
@@ -1089,8 +1213,12 @@ fn handle_events(
 							match key.code {
 								KeyCode::Esc => actions.push(Action::CancelPath),
 								KeyCode::Enter => actions.push(Action::SubmitPath),
-								KeyCode::Backspace => { input_buffer.pop(); }
-								KeyCode::Char(c) => { input_buffer.push(c); }
+								KeyCode::Backspace => {
+									input_buffer.pop();
+								}
+								KeyCode::Char(c) => {
+									input_buffer.push(c);
+								}
 								_ => {}
 							}
 						}
@@ -1110,7 +1238,9 @@ fn handle_events(
 							KeyCode::End => Some(Action::End),
 							_ => None,
 						};
-						if let Some(a) = action { actions.push(a); }
+						if let Some(a) = action {
+							actions.push(a);
+						}
 					}
 				}
 				Event::Mouse(me) => {
@@ -1132,7 +1262,10 @@ fn handle_events(
 								debug!("Mouse button down: {:?}", button);
 								// Only handle left mouse button clicks for row selection
 								if matches!(button, crossterm::event::MouseButton::Left) {
-									debug!("Left mouse button clicked at ({}, {})", me.row, me.column);
+									debug!(
+										"Left mouse button clicked at ({}, {})",
+										me.row, me.column
+									);
 									actions.push(Action::SelectRow(me.row, me.column));
 								}
 							}
@@ -1150,7 +1283,9 @@ fn handle_events(
 				_ => {}
 			}
 			// drain without blocking
-			if !event::poll(Duration::from_millis(0))? { break; }
+			if !event::poll(Duration::from_millis(0))? {
+				break;
+			}
 		}
 	}
 	Ok(actions)

@@ -203,12 +203,18 @@ impl CacheManager {
 
 		// Insert the loaded relations using type-safe keys
 		if rel_hashes.height() > 0 {
-			relations.insert::<IdenticalHashes>(rel_hashes)
-				.map_err(|e| CacheError::InvalidationFailed { reason: e.to_string() })?;
+			relations
+				.insert::<IdenticalHashes>(rel_hashes)
+				.map_err(|e| CacheError::InvalidationFailed {
+					reason: e.to_string(),
+				})?;
 		}
 		if rel_groups.height() > 0 {
-			relations.insert::<SimilarityGroups>(rel_groups)
-				.map_err(|e| CacheError::InvalidationFailed { reason: e.to_string() })?;
+			relations
+				.insert::<SimilarityGroups>(rel_groups)
+				.map_err(|e| CacheError::InvalidationFailed {
+					reason: e.to_string(),
+				})?;
 		}
 
 		Ok(Some((state, relations)))

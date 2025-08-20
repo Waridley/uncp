@@ -10,7 +10,9 @@ use crate::data::{FileKind, FileRecord, ScanState};
 use crate::detector::PathFilter;
 use crate::error::{SystemError, SystemResult};
 use crate::memory::MemoryManager;
-use crate::systems::{yield_periodically_with_cancellation, System, SystemContext, SystemProgress, SystemRunner};
+use crate::systems::{
+	System, SystemContext, SystemProgress, SystemRunner, yield_periodically_with_cancellation,
+};
 
 /// System for discovering files in the filesystem
 pub struct FileDiscoverySystem {
@@ -138,7 +140,8 @@ impl FileDiscoverySystem {
 
 		for entry in walker.into_iter() {
 			// Yield control periodically and check for cancellation
-			yield_periodically_with_cancellation(last_yield, context.yield_interval, context).await?;
+			yield_periodically_with_cancellation(last_yield, context.yield_interval, context)
+				.await?;
 
 			let entry = match entry {
 				Ok(e) => e,
@@ -177,9 +180,10 @@ impl FileDiscoverySystem {
 			}
 
 			if let Some(max_size) = self.max_file_size
-				&& size > max_size {
-					continue;
-				}
+				&& size > max_size
+			{
+				continue;
+			}
 
 			// Convert modification time
 			let modified = match metadata.modified() {
@@ -220,9 +224,10 @@ impl FileDiscoverySystem {
 	fn should_include_file(&self, path: &Path) -> bool {
 		// First check glob-based path filter if configured
 		if let Some(ref filter) = self.path_filter
-			&& !filter.should_include(path) {
-				return false;
-			}
+			&& !filter.should_include(path)
+		{
+			return false;
+		}
 
 		// Then check legacy extension-based filtering
 		let extension = path
@@ -236,9 +241,9 @@ impl FileDiscoverySystem {
 				.exclude_extensions
 				.iter()
 				.any(|e| e.eq_ignore_ascii_case(ext))
-			{
-				return false;
-			}
+		{
+			return false;
+		}
 
 		// Check include list if specified
 		if let Some(ref include_list) = self.include_extensions {

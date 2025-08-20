@@ -1,15 +1,15 @@
 //! Common path helpers for cache locations
 
+use dirs::cache_dir;
+use polars::datatypes::{DataType, Field};
+use polars::prelude::AnyValue;
+use serde::{Deserialize, Deserializer, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt::Write;
-use dirs::cache_dir;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{LazyLock, RwLock};
-use polars::datatypes::{DataType, Field};
-use polars::prelude::AnyValue;
-use serde::{Deserialize, Deserializer, Serialize};
 
 type Arena = typed_generational_arena::Arena<PathSegment<'static>>;
 
@@ -30,11 +30,10 @@ pub fn intern_path(path: impl AsRef<Path>) -> DirEntryId {
 	// Try to canonicalize, but fall back to the original path if it fails
 	// This allows interning of non-existent paths
 	let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-	let last = path.components()
-		.fold(None, |parent, seg| {
-			let idx = get_or_insert_segment(seg, parent);
-			Some(idx)
-		});
+	let last = path.components().fold(None, |parent, seg| {
+		let idx = get_or_insert_segment(seg, parent);
+		Some(idx)
+	});
 	last.expect("successfully inserted at least one segment")
 }
 
@@ -44,9 +43,9 @@ pub struct PathArena {
 }
 
 impl Default for PathArena {
-    fn default() -> Self {
-        Self::new()
-    }
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 impl PathArena {
@@ -62,7 +61,7 @@ impl PathArena {
 	pub fn get(&self, segment: Component<'_>, parent: Option<DirEntryId>) -> Option<DirEntryId> {
 		self.indices.get(&segment.into())?.get(&parent).copied()
 	}
-	
+
 	pub fn insert(&mut self, segment: Component, parent: Option<DirEntryId>) -> DirEntryId {
 		if let Some(idx) = self.get(segment, parent) {
 			return idx;
@@ -88,21 +87,21 @@ impl<'a> PathSegment<'a> {
 	pub fn component(&self) -> &ComponentCow<'a> {
 		&self.component
 	}
-	
+
 	pub fn into_owned(self) -> PathSegment<'static> {
 		PathSegment {
 			component: self.component.clone().into_owned(),
 			parent: self.parent,
 		}
 	}
-	
+
 	pub fn parent(&self) -> Option<PathSegment<'static>> {
 		self.parent.map(|idx| {
 			let arena = ARENA.read().unwrap();
 			arena.segments.get(idx.0).unwrap().clone().into_owned()
 		})
 	}
-	
+
 	pub fn resolve(&self) -> PathBuf {
 		self.parent()
 			.map(|p| p.resolve())
@@ -125,15 +124,15 @@ impl DirEntryId {
 		segments.reverse();
 		DirEntrySegmentIter::new(segments)
 	}
-	
+
 	pub fn resolve(&self) -> PathBuf {
 		self.iter().collect()
 	}
-	
+
 	pub fn raw_parts(&self) -> (usize, usize) {
 		(self.0.arr_idx(), self.0.r#gen())
 	}
-	
+
 	pub fn from_raw_parts(idx: usize, generation: usize) -> Option<Self> {
 		let idx = Self::from_raw_parts_unchecked(idx, generation);
 		let arena = ARENA.read().unwrap();
@@ -143,11 +142,11 @@ impl DirEntryId {
 			None
 		}
 	}
-	
+
 	pub fn from_raw_parts_unchecked(idx: usize, generation: usize) -> Self {
 		DirEntryId(typed_generational_arena::Index::new(idx, generation))
 	}
-	
+
 	pub fn to_polars(&self) -> AnyValue<'static> {
 		let (idx, generation) = self.raw_parts();
 		AnyValue::StructOwned(Box::new((
@@ -161,7 +160,7 @@ impl DirEntryId {
 			],
 		)))
 	}
-	
+
 	pub fn from_polars(value: &AnyValue) -> Option<Self> {
 		let (idx, generation) = match value {
 			AnyValue::StructOwned(s) => {
@@ -173,11 +172,13 @@ impl DirEntryId {
 				let generation = s.0[1].extract::<u64>()?;
 				(idx as usize, generation as usize)
 			}
-			other => if cfg!(debug_assertions) {
-				panic!("Expected AnyValue::StructOwned, got {other:?}");
-			} else {
-				return None
-			},
+			other => {
+				if cfg!(debug_assertions) {
+					panic!("Expected AnyValue::StructOwned, got {other:?}");
+				} else {
+					return None;
+				}
+			}
 		};
 		Self::from_raw_parts(idx, generation)
 	}
@@ -288,8 +289,8 @@ impl std::fmt::Display for DirEntryId {
 
 impl Serialize for DirEntryId {
 	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-		where
-			S: serde::Serializer,
+	where
+		S: serde::Serializer,
 	{
 		serializer.collect_str(self)
 	}
@@ -298,7 +299,7 @@ impl Serialize for DirEntryId {
 impl<'de> Deserialize<'de> for DirEntryId {
 	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
 	where
-		D: Deserializer<'de>
+		D: Deserializer<'de>,
 	{
 		let s = <&'de str as Deserialize<'de>>::deserialize(deserializer)?;
 		let idx = intern_path(s);
@@ -333,12 +334,16 @@ impl<'a> From<&'a ComponentCow<'a>> for Component<'a> {
 			ComponentCow::Prefix(prefix) => {
 				// Unfortunate, but Windows is a pain sometimes.
 				let path = <OsStr as AsRef<Path>>::as_ref(prefix);
-				let parsed = path.components().next().expect("this was a prefix, it must be one component");
-				#[cfg(debug_assertions)] {
+				let parsed = path
+					.components()
+					.next()
+					.expect("this was a prefix, it must be one component");
+				#[cfg(debug_assertions)]
+				{
 					assert!(matches!(parsed, Component::Prefix(s) if *s.as_os_str() == *prefix));
 				}
 				parsed
-			},
+			}
 			ComponentCow::RootDir => Self::RootDir,
 			ComponentCow::CurDir => Self::CurDir,
 			ComponentCow::ParentDir => Self::ParentDir,

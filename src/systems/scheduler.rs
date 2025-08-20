@@ -85,7 +85,9 @@ impl SystemScheduler {
 				system.name(),
 				system.priority()
 			);
-			system.run_with_cancellation(state, memory_mgr, cancellation_token.clone()).await?;
+			system
+				.run_with_cancellation(state, memory_mgr, cancellation_token.clone())
+				.await?;
 			debug!("Scheduler: completed system {}", system.name());
 		}
 

@@ -69,9 +69,14 @@ fn main() {
 
 async fn run(opts: Opts) -> anyhow::Result<()> {
 	match opts.command {
-		Command::Scan { path, hash: _, include, exclude } => {
+		Command::Scan {
+			path,
+			hash: _,
+			include,
+			exclude,
+		} => {
 			debug!(?include, ?exclude, "Scan requested for {}", path.display());
-			
+
 			// Create detector config with path filtering
 			let mut config = DetectorConfig::default();
 			if !include.is_empty() || !exclude.is_empty() {
@@ -89,7 +94,8 @@ async fn run(opts: Opts) -> anyhow::Result<()> {
 			}
 
 			// Foreground CLI: run engine for parallel speedup, print progress to stderr, exit on completion
-			let (_engine, events, cmds) = BackgroundEngine::start_with_mode(detector, EngineMode::Cli);
+			let (_engine, events, cmds) =
+				BackgroundEngine::start_with_mode(detector, EngineMode::Cli);
 			let _ = cmds.send(EngineCommand::SetPath(path.clone())).await;
 			// Clear any cached state to ensure we only scan the specified path
 			let _ = cmds.send(EngineCommand::ClearState).await;
