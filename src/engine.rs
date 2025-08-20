@@ -204,7 +204,7 @@ pub enum EngineMode {
 
 impl BackgroundEngine {
 	pub fn start(
-		mut detector: DuplicateDetector,
+		detector: DuplicateDetector,
 	) -> (
 		Self,
 		channel::Receiver<EngineEvent>,

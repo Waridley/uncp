@@ -509,4 +509,4 @@ pub use detector::{DetectorConfig, DuplicateDetector, PathFilter};
 pub use error::{DetectorError, DetectorResult};
 pub use query::Query;
 pub use engine::{EngineMode};
-pub use relations::{RelationKey, RelationMetadata, IdenticalHashes, SameFileName, SameSize, SimilarityGroups, PairwiseRelations};
+pub use relations::{RelationKey, RelationMetadata, IdenticalHashes, SameFileName, SameSize, SimilarityGroups};

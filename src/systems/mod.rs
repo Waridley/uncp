@@ -25,7 +25,7 @@ pub trait SystemRunner: Send + Sync {
 		&self,
 		state: &mut ScanState,
 		memory_mgr: &mut MemoryManager,
-		cancellation_token: std::sync::Arc<std::sync::atomic::AtomicBool>,
+		_cancellation_token: std::sync::Arc<std::sync::atomic::AtomicBool>,
 	) -> SystemResult<()> {
 		// Default implementation just calls run() - systems can override for cancellation support
 		self.run(state, memory_mgr).await

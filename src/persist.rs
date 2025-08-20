@@ -40,9 +40,6 @@ impl CacheManager {
 	fn rel_groups_path(&self) -> PathBuf {
 		self.cache_dir.join("relations_groups.parquet")
 	}
-	fn rel_pairs_path(&self) -> PathBuf {
-		self.cache_dir.join("relations_pairs.parquet")
-	}
 
 	pub fn ensure_dir(&self) -> CacheResult<()> {
 		fs::create_dir_all(&self.cache_dir)?;
@@ -112,7 +109,7 @@ impl CacheManager {
 		}
 
 		// Save state DataFrame and relations atomically
-		use crate::relations::{IdenticalHashes, SimilarityGroups, PairwiseRelations};
+		use crate::relations::{IdenticalHashes, SimilarityGroups};
 
 		atomic_write_parquet(self.state_path(), state.clone().data.clone())?;
 
@@ -124,11 +121,6 @@ impl CacheManager {
 		// Save similarity groups if they exist
 		if let Some(similarity_groups) = relations.get::<SimilarityGroups>() {
 			atomic_write_parquet(self.rel_groups_path(), similarity_groups.clone())?;
-		}
-
-		// Save pairwise relations if they exist
-		if let Some(pairwise_relations) = relations.get::<PairwiseRelations>() {
-			atomic_write_parquet(self.rel_pairs_path(), pairwise_relations.clone())?;
 		}
 
 		// Save metadata JSON last
@@ -192,11 +184,6 @@ impl CacheManager {
 		} else {
 			DataFrame::default()
 		};
-		let rel_pairs = if self.rel_pairs_path().exists() {
-			ParquetReader::new(File::open(self.rel_pairs_path())?).finish()?
-		} else {
-			DataFrame::default()
-		};
 
 		// Load metadata
 		let meta_bytes = fs::read(self.meta_path())?;
@@ -204,7 +191,7 @@ impl CacheManager {
 		let started =
 			chrono::DateTime::from_timestamp_millis(meta.last_scan_time).unwrap_or_else(Utc::now);
 
-		use crate::relations::{IdenticalHashes, SimilarityGroups, PairwiseRelations};
+		use crate::relations::{IdenticalHashes, SimilarityGroups};
 
 		let state = ScanState {
 			data: state_df,
@@ -221,10 +208,6 @@ impl CacheManager {
 		}
 		if rel_groups.height() > 0 {
 			relations.insert::<SimilarityGroups>(rel_groups)
-				.map_err(|e| CacheError::InvalidationFailed { reason: e.to_string() })?;
-		}
-		if rel_pairs.height() > 0 {
-			relations.insert::<PairwiseRelations>(rel_pairs)
 				.map_err(|e| CacheError::InvalidationFailed { reason: e.to_string() })?;
 		}
 
@@ -290,10 +273,6 @@ mod tests {
 		assert_eq!(
 			cache_manager.rel_groups_path(),
 			temp_dir.path().join("relations_groups.parquet")
-		);
-		assert_eq!(
-			cache_manager.rel_pairs_path(),
-			temp_dir.path().join("relations_pairs.parquet")
 		);
 	}
 

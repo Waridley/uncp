@@ -7,7 +7,6 @@ use std::time::Duration;
 use async_channel as channel;
 use async_executor::Executor;
 use futures_lite::future;
-use rayon;
 
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;
@@ -246,8 +245,7 @@ fn run(_ex: &std::sync::Arc<Executor<'_>>, terminal: &mut ratatui::DefaultTermin
 							if let Some(home_dir) = dirs::home_dir() {
 								if new_path_str == "~" {
 									home_dir.to_string_lossy().to_string()
-								} else if new_path_str.starts_with("~/") {
-									let rest = &new_path_str[2..];
+								} else if let Some(rest) = new_path_str.strip_prefix("~/") {
 									home_dir.join(rest).to_string_lossy().to_string()
 								} else {
 									new_path_str.to_string()
@@ -378,9 +376,7 @@ fn run(_ex: &std::sync::Arc<Executor<'_>>, terminal: &mut ratatui::DefaultTermin
 					pres = pres.clone().with_status("Hashing started...");
 				}
 				Action::Up => {
-					if selected_idx > 0 {
-						selected_idx -= 1;
-					}
+					selected_idx = selected_idx.saturating_sub(1);
 					table_state.select(Some(selected_idx));
 				}
 				Action::Down => {

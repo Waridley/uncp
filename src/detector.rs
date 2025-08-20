@@ -75,7 +75,7 @@ use tracing::info;
 /// - **Exclude Build Artifacts**: `**/target/**`, `**/build/**`
 /// - **Exclude Version Control**: `**/.git/**`, `**/.svn/**`
 /// - **Large File Focus**: Combined with size filters for efficiency
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct PathFilter {
 	/// Glob patterns that determine what files to include in scanning.
 	/// If empty, all files are included by default.
@@ -87,17 +87,6 @@ pub struct PathFilter {
 	include_globset: Option<GlobSet>,
 	/// Compiled globset for exclude patterns (cached for performance)
 	exclude_globset: Option<GlobSet>,
-}
-
-impl Default for PathFilter {
-	fn default() -> Self {
-		Self {
-			include_patterns: Vec::new(),
-			exclude_patterns: Vec::new(),
-			include_globset: None,
-			exclude_globset: None,
-		}
-	}
 }
 
 impl PathFilter {
@@ -159,17 +148,14 @@ impl PathFilter {
 		let path = path.as_ref();
 
 		// If we have include patterns, the path must match at least one
-		if let Some(ref include_set) = self.include_globset {
-			if !include_set.is_match(path) {
+		if let Some(ref include_set) = self.include_globset
+			&& !include_set.is_match(path) {
 				return false;
 			}
-		}
 
 		// If we have exclude patterns, the path must not match any
-		if let Some(ref exclude_set) = self.exclude_globset {
-			if exclude_set.is_match(path) {
-				return false;
-			}
+		if let Some(ref exclude_set) = self.exclude_globset && exclude_set.is_match(path) {
+			return false;
 		}
 
 		true
@@ -423,13 +409,12 @@ impl DuplicateDetector {
 	pub fn new_with_cache(config: DetectorConfig) -> DetectorResult<Self> {
 		let mut this = Self::new(config)?;
 		// Try loading cache on creation (best-effort)
-		if let Some(dir) = default_cache_dir() {
-			if let Ok(Some((state, relations))) = CacheManager::new(dir).load_all() {
+		if let Some(dir) = default_cache_dir()
+			&& let Ok(Some((state, relations))) = CacheManager::new(dir).load_all() {
 				this.state = state;
 				this.relations = relations;
 				info!("Detector: loaded cache at init");
 			}
-		}
 		Ok(this)
 	}
 
@@ -457,11 +442,10 @@ impl DuplicateDetector {
 			.run_all(&mut self.state, &mut self.memory_mgr)
 			.await
 			.map_err(DetectorError::from);
-		if res.is_ok() && !self.config.disable_auto_cache {
-			if let Some(dir) = default_cache_dir() {
+		if res.is_ok() && !self.config.disable_auto_cache
+			&& let Some(dir) = default_cache_dir() {
 				let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
 			}
-		}
 		res
 	}
 
@@ -484,11 +468,10 @@ impl DuplicateDetector {
 			.run_all(&mut self.state, &mut self.memory_mgr)
 			.await
 			.map_err(DetectorError::from);
-		if res.is_ok() && !self.config.disable_auto_cache {
-			if let Some(dir) = default_cache_dir() {
+		if res.is_ok() && !self.config.disable_auto_cache
+			&& let Some(dir) = default_cache_dir() {
 				let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
 			}
-		}
 		res
 	}
 
@@ -512,11 +495,10 @@ impl DuplicateDetector {
 			.run_all_with_cancellation(&mut self.state, &mut self.memory_mgr, cancellation_token)
 			.await
 			.map_err(DetectorError::from);
-		if res.is_ok() && !self.config.disable_auto_cache {
-			if let Some(dir) = default_cache_dir() {
+		if res.is_ok() && !self.config.disable_auto_cache
+			&& let Some(dir) = default_cache_dir() {
 				let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
 			}
-		}
 		res
 	}
 
@@ -533,11 +515,10 @@ impl DuplicateDetector {
 			.run_all(&mut self.state, &mut self.memory_mgr)
 			.await
 			.map_err(DetectorError::from);
-		if res.is_ok() && !self.config.disable_auto_cache {
-			if let Some(dir) = default_cache_dir() {
+		if res.is_ok() && !self.config.disable_auto_cache
+			&& let Some(dir) = default_cache_dir() {
 				let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
 			}
-		}
 		res
 	}
 	pub async fn process_until_complete_with_progress(
@@ -556,11 +537,10 @@ impl DuplicateDetector {
 			.run_all(&mut self.state, &mut self.memory_mgr)
 			.await
 			.map_err(DetectorError::from);
-		if res.is_ok() && !self.config.disable_auto_cache {
-			if let Some(dir) = default_cache_dir() {
+		if res.is_ok() && !self.config.disable_auto_cache
+			&& let Some(dir) = default_cache_dir() {
 				let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
 			}
-		}
 		res
 	}
 
@@ -570,11 +550,10 @@ impl DuplicateDetector {
 			.run_all(&mut self.state, &mut self.memory_mgr)
 			.await
 			.map_err(DetectorError::from);
-		if res.is_ok() && !self.config.disable_auto_cache {
-			if let Some(dir) = default_cache_dir() {
+		if res.is_ok() && !self.config.disable_auto_cache
+			&& let Some(dir) = default_cache_dir() {
 				let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
 			}
-		}
 		res
 	}
 
@@ -809,13 +788,12 @@ impl DuplicateDetector {
 	}
 	pub fn files_by_type_counts(&self) -> std::collections::HashMap<String, usize> {
 		let mut map = std::collections::HashMap::new();
-		if let Ok(s) = self.state.data.column("file_type") {
-			if let Ok(utf8) = s.str() {
+		if let Ok(s) = self.state.data.column("file_type")
+			&& let Ok(utf8) = s.str() {
 				for v in utf8.into_iter().flatten() {
 					*map.entry(v.to_string()).or_insert(0) += 1;
 				}
 			}
-		}
 		map
 	}
 }

@@ -138,9 +138,7 @@ impl FileDiscoverySystem {
 
 		for entry in walker.into_iter() {
 			// Yield control periodically and check for cancellation
-			if let Err(e) = yield_periodically_with_cancellation(last_yield, context.yield_interval, context).await {
-				return Err(e);
-			}
+			yield_periodically_with_cancellation(last_yield, context.yield_interval, context).await?;
 
 			let entry = match entry {
 				Ok(e) => e,
@@ -178,11 +176,10 @@ impl FileDiscoverySystem {
 				continue;
 			}
 
-			if let Some(max_size) = self.max_file_size {
-				if size > max_size {
+			if let Some(max_size) = self.max_file_size
+				&& size > max_size {
 					continue;
 				}
-			}
 
 			// Convert modification time
 			let modified = match metadata.modified() {
@@ -222,11 +219,10 @@ impl FileDiscoverySystem {
 
 	fn should_include_file(&self, path: &Path) -> bool {
 		// First check glob-based path filter if configured
-		if let Some(ref filter) = self.path_filter {
-			if !filter.should_include(path) {
+		if let Some(ref filter) = self.path_filter
+			&& !filter.should_include(path) {
 				return false;
 			}
-		}
 
 		// Then check legacy extension-based filtering
 		let extension = path
@@ -235,15 +231,14 @@ impl FileDiscoverySystem {
 			.map(|s| s.to_lowercase());
 
 		// Check exclude list first
-		if let Some(ref ext) = extension {
-			if self
+		if let Some(ref ext) = extension
+			&& self
 				.exclude_extensions
 				.iter()
 				.any(|e| e.eq_ignore_ascii_case(ext))
 			{
 				return false;
 			}
-		}
 
 		// Check include list if specified
 		if let Some(ref include_list) = self.include_extensions {

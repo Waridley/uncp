@@ -411,33 +411,7 @@ impl RelationKey for SimilarityGroups {
         ])
     }
 }
-
-/// Pairwise relationships between individual files
-pub struct PairwiseRelations;
-
-impl RelationKey for PairwiseRelations {
-    fn name() -> &'static str {
-        "pairwise_relations"
-    }
-
-    fn description() -> &'static str {
-        "Individual file-to-file relationships with similarity scores"
-    }
-
-    fn create_schema() -> PolarsResult<DataFrame> {
-        use polars::prelude::*;
-
-        df! {
-            "path_a" => Vec::<String>::new(),
-            "path_b" => Vec::<String>::new(),
-            "relation_type" => Vec::<String>::new(),
-            "score" => Vec::<f64>::new(),
-            "data" => Vec::<String>::new(),
-            "computed_at" => Vec::<i64>::new(),
-        }
-    }
-}
-
+ 
 #[cfg(test)]
 mod tests {
     use super::*;
