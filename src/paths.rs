@@ -1,15 +1,17 @@
 //! Common path helpers for cache locations
 
 use dirs::cache_dir;
+use globset;
 use polars::datatypes::{DataType, Field};
 use polars::prelude::AnyValue;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fmt::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{LazyLock, RwLock};
+use tracing::error;
 
 type Arena = typed_generational_arena::Arena<PathSegment<'static>>;
 
@@ -145,6 +147,191 @@ impl DirEntryId {
 
 	pub fn from_raw_parts_unchecked(idx: usize, generation: usize) -> Self {
 		DirEntryId(typed_generational_arena::Index::new(idx, generation))
+	}
+
+	pub fn with_segment<U>(&self, f: impl FnOnce(&PathSegment<'_>) -> U) -> Option<U> {
+		let arena = ARENA.read().unwrap();
+		let segment = arena.segments.get(self.0)?;
+		Some(f(segment))
+	}
+
+	pub fn name_eq(&self, name: impl AsRef<OsStr>) -> bool {
+		self.with_segment(|seg| seg.component.as_os_str() == name.as_ref())
+			.unwrap_or(false)
+	}
+
+	/// Check if the last component of the represented path ends with the given suffix
+	// Apparently the `Pattern` API is unstable, so I can't just use the same trait bounds as `str::ends_with`
+	pub fn name_ends_with(&self, suffix: impl AsRef<str>) -> bool {
+		self.with_segment(|seg| {
+			if let Some(name) = seg.component.as_os_str().to_str() {
+				name.ends_with(suffix.as_ref())
+			} else {
+				false
+			}
+		})
+		.unwrap_or(false)
+	}
+
+	/// Check if the last component of the represented path contains the given substring
+	/// This is much faster than converting to a full path string
+	pub fn name_contains(&self, needle: impl AsRef<str>) -> bool {
+		self.with_segment(|seg| {
+			if let Some(name) = seg.component.as_os_str().to_str() {
+				name.contains(needle.as_ref())
+			} else {
+				false
+			}
+		})
+		.unwrap_or(false)
+	}
+
+	/// Check if the last component of the represented path starts with the given prefix
+	pub fn name_starts_with(&self, prefix: impl AsRef<str>) -> bool {
+		self.with_segment(|seg| {
+			if let Some(name) = seg.component.as_os_str().to_str() {
+				name.starts_with(prefix.as_ref())
+			} else {
+				false
+			}
+		})
+		.unwrap_or(false)
+	}
+
+	/// Check if any component in the path contains the given substring
+	/// Short-circuits on first match, avoiding full path construction
+	pub fn path_contains(&self, needle: impl AsRef<str>) -> bool {
+		let mut current = Some(*self);
+		let arena = ARENA.read().unwrap();
+
+		while let Some(id) = current {
+			let Some(seg) = arena.segments.get(id.0) else {
+				return false;
+			};
+			if let Some(name) = seg.component.as_os_str().to_str()
+				&& name.contains(needle.as_ref())
+			{
+				return true;
+			}
+
+			current = id.parent();
+		}
+		false
+	}
+
+	/// Check if the path starts with the given directory path
+	/// This is optimized for common filtering patterns like "/home/user" or "/var/log"
+	pub fn is_descendant_of_path(&self, prefix_path: impl AsRef<Path>) -> bool {
+		let prefix_path = prefix_path.as_ref();
+		let prefix_path = prefix_path.canonicalize().unwrap_or_else(|e| {
+			error!("Failed to canonicalize prefix path: {e}");
+			prefix_path.to_path_buf()
+		});
+		
+		let mut our_components = self.iter();
+		for prefix_comp in prefix_path.components() {
+			let Some(our_comp) = our_components.next() else {
+				return false;
+			};
+			if our_comp != prefix_comp {
+				return false;
+			}
+		}
+
+		true
+	}
+
+	/// Check if the path matches a simple glob pattern
+	/// Supports * (any characters) and ? (single character) in the last component only
+	/// For directory matching, use starts_with_path() first
+	///
+	/// # Performance Note
+	/// This method compiles the glob pattern on each call. For repeated use of the same pattern,
+	/// consider using `name_matches_compiled_glob()` with a pre-compiled `GlobMatcher`.
+	pub fn name_matches_glob(&self, pattern: &str) -> bool {
+		self.with_segment(|seg| {
+			if let Some(name) = seg.component.as_os_str().to_str() {
+				glob_match(name, pattern)
+			} else {
+				false
+			}
+		})
+		.unwrap_or(false)
+	}
+
+	/// Check if the filename matches a pre-compiled glob pattern
+	/// This is more efficient when using the same pattern multiple times
+	///
+	/// # Example
+	/// ```rust
+	/// use globset::Glob;
+	///
+	/// // Compile once, use many times
+	/// let txt_matcher = Glob::new("*.txt").unwrap().compile_matcher();
+	///
+	/// for path_id in many_paths {
+	///     if path_id.name_matches_compiled_glob(&txt_matcher) {
+	///         // Process .txt files
+	///     }
+	/// }
+	/// ```
+	pub fn name_matches_compiled_glob(&self, matcher: &globset::GlobMatcher) -> bool {
+		self.with_segment(|seg| {
+			if let Some(name) = seg.component.as_os_str().to_str() {
+				matcher.is_match(name)
+			} else {
+				false
+			}
+		})
+		.unwrap_or(false)
+	}
+
+	/// Get the file extension if present
+	pub fn extension(&self) -> Option<OsString> {
+		self.with_segment(|seg| seg.component.as_path().extension().map(OsStr::to_os_string))
+			.flatten()
+	}
+
+	/// Check if the file has the given extension (case-insensitive)
+	pub fn has_extension(&self, target_ext: impl AsRef<OsStr>) -> bool {
+		self.with_segment(|seg| {
+			if let Some(ext) = seg.component.as_path().extension() {
+				ext.eq_ignore_ascii_case(target_ext)
+			} else {
+				false
+			}
+		})
+		.unwrap_or(false)
+	}
+
+	/// Get the parent directory ID
+	pub fn parent(&self) -> Option<DirEntryId> {
+		self.with_segment(|seg| seg.parent).unwrap_or(None)
+	}
+
+	/// Check if this path is a descendant of the given parent path
+	pub fn is_descendant_of(&self, ancestor: DirEntryId) -> bool {
+		let mut current = self.parent();
+		while let Some(parent) = current {
+			if parent == ancestor {
+				return true;
+			}
+			current = parent.parent();
+		}
+		false
+	}
+
+	/// Get the depth of this path (number of components from root)
+	pub fn depth(&self) -> usize {
+		let mut depth = 0;
+		let mut current = Some(*self);
+
+		while let Some(id) = current {
+			depth += 1;
+			current = id.parent();
+		}
+
+		depth
 	}
 
 	pub fn to_polars(&self) -> AnyValue<'static> {
@@ -387,6 +574,33 @@ impl ComponentCow<'_> {
 			ComponentCow::Name(s) => ComponentCow::Name(Cow::Owned(s.into_owned())),
 		}
 	}
+
+	pub fn as_path(&self) -> &Path {
+		self.as_ref()
+	}
+
+	pub fn as_os_str(&self) -> &OsStr {
+		self.as_ref()
+	}
+}
+
+impl PartialEq<Component<'_>> for ComponentCow<'_> {
+	fn eq(&self, other: &Component<'_>) -> bool {
+		match (self, other) {
+			(ComponentCow::Prefix(s), Component::Prefix(t)) => s == t.as_os_str(),
+			(ComponentCow::RootDir, Component::RootDir) => true,
+			(ComponentCow::CurDir, Component::CurDir) => true,
+			(ComponentCow::ParentDir, Component::ParentDir) => true,
+			(ComponentCow::Name(s), Component::Normal(t)) => s == t,
+			_ => false,
+		}
+	}
+}
+
+impl PartialEq<ComponentCow<'_>> for Component<'_> {
+	fn eq(&self, other: &ComponentCow<'_>) -> bool {
+		other == self
+	}
 }
 
 /// Get the default cache directory for uncp, e.g.:
@@ -398,6 +612,18 @@ pub fn default_cache_dir() -> Option<PathBuf> {
 		p.push("uncp");
 		p
 	})
+}
+
+/// Fast glob matching using globset for filename patterns
+/// This is more efficient and feature-complete than a custom implementation
+fn glob_match(text: &str, pattern: &str) -> bool {
+	// Use globset for efficient glob matching
+	// This handles all standard glob patterns including *, ?, [], {}, etc.
+	// Note: For high-frequency usage with repeated patterns, consider caching compiled globs
+	match globset::Glob::new(pattern) {
+		Ok(glob) => glob.compile_matcher().is_match(text),
+		Err(_) => false, // Invalid pattern doesn't match anything
+	}
 }
 
 #[cfg(test)]
@@ -492,5 +718,123 @@ mod tests {
 
 		// Clean up
 		let _ = std::fs::remove_dir_all(&temp_dir.join("test_nested"));
+	}
+
+	#[test]
+	fn test_filtering_methods() {
+		// Create test paths
+		let test_paths = [
+			"/home/user/documents/report.txt",
+			"/home/user/pictures/photo.jpg",
+			"/var/log/system.log",
+			"/tmp/build/output.dat",
+			"/home/user/downloads/archive.tar.gz",
+		];
+
+		let interned_paths: Vec<DirEntryId> = test_paths
+			.iter()
+			.map(|p| intern_path(PathBuf::from(p)))
+			.collect();
+
+		// Test filename filtering
+		let txt_files: Vec<_> = interned_paths
+			.iter()
+			.filter(|id| id.name_ends_with(".txt"))
+			.collect();
+		assert_eq!(txt_files.len(), 1);
+
+		let log_files: Vec<_> = interned_paths
+			.iter()
+			.filter(|id| id.has_extension("log"))
+			.collect();
+		assert_eq!(log_files.len(), 1);
+
+		// Test path prefix filtering
+		let home_files: Vec<_> = interned_paths
+			.iter()
+			.filter(|id| id.is_descendant_of_path("/home/user"))
+			.collect();
+		assert_eq!(home_files.len(), 3);
+
+		// Test path contains
+		let user_files: Vec<_> = interned_paths
+			.iter()
+			.filter(|id| id.path_contains("user"))
+			.collect();
+		assert_eq!(user_files.len(), 3);
+
+		// Test glob matching
+		let photo_id = intern_path(PathBuf::from("/home/user/pictures/photo.jpg"));
+		assert!(photo_id.name_matches_glob("*.jpg"));
+		assert!(photo_id.name_matches_glob("photo.*"));
+		assert!(photo_id.name_matches_glob("p?oto.jpg"));
+		assert!(!photo_id.name_matches_glob("*.txt"));
+
+		// Test extension extraction
+		let archive_id = intern_path(PathBuf::from("/home/user/downloads/archive.tar.gz"));
+		assert_eq!(archive_id.extension(), Some(OsString::from("gz")));
+	}
+
+	#[test]
+	fn test_glob_matching() {
+		assert!(super::glob_match("hello.txt", "*.txt"));
+		assert!(super::glob_match("hello.txt", "hello.*"));
+		assert!(super::glob_match("hello.txt", "h?llo.txt"));
+		assert!(super::glob_match("hello.txt", "*"));
+		assert!(super::glob_match("hello.txt", "hello.txt"));
+
+		assert!(!super::glob_match("hello.txt", "*.jpg"));
+		assert!(!super::glob_match("hello.txt", "world.*"));
+		assert!(!super::glob_match("hello.txt", "h?llo.jpg"));
+		assert!(!super::glob_match("hello.txt", "goodbye"));
+
+		// Edge cases
+		assert!(super::glob_match("", "*"));
+		assert!(super::glob_match("", ""));
+		assert!(!super::glob_match("hello", ""));
+		assert!(super::glob_match("hello", "*****"));
+	}
+
+	#[test]
+	fn test_compiled_glob_matching() {
+		// Test the optimized compiled glob approach
+		let txt_glob = globset::Glob::new("*.txt").unwrap().compile_matcher();
+		let jpg_glob = globset::Glob::new("*.jpg").unwrap().compile_matcher();
+
+		let test_paths = [
+			"/home/user/document.txt",
+			"/home/user/photo.jpg",
+			"/var/log/system.log",
+		];
+
+		let interned_paths: Vec<DirEntryId> = test_paths
+			.iter()
+			.map(|p| intern_path(PathBuf::from(p)))
+			.collect();
+
+		// Test compiled glob matching
+		let txt_files: Vec<_> = interned_paths
+			.iter()
+			.filter(|id| id.name_matches_compiled_glob(&txt_glob))
+			.collect();
+		assert_eq!(txt_files.len(), 1);
+
+		let jpg_files: Vec<_> = interned_paths
+			.iter()
+			.filter(|id| id.name_matches_compiled_glob(&jpg_glob))
+			.collect();
+		assert_eq!(jpg_files.len(), 1);
+
+		// Verify same results as string-based glob
+		for path_id in &interned_paths {
+			assert_eq!(
+				path_id.name_matches_glob("*.txt"),
+				path_id.name_matches_compiled_glob(&txt_glob)
+			);
+			assert_eq!(
+				path_id.name_matches_glob("*.jpg"),
+				path_id.name_matches_compiled_glob(&jpg_glob)
+			);
+		}
 	}
 }

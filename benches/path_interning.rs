@@ -3,7 +3,7 @@ use polars::prelude::*;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uncp::paths::{DirEntryId, intern_path};
 
 /// Estimate memory usage of a data structure
@@ -126,8 +126,8 @@ fn generate_diverse_paths(count: usize, pattern: PathPattern, seed: u64) -> Vec<
 			PathPattern::Simple => {
 				let base = simple_bases[i % simple_bases.len()];
 				let subdir = format!("subdir_{}", i % 10);
-				let filename = format!("file_{:06}.txt", i);
-				PathBuf::from(base).join(subdir).join(filename)
+				let name = format!("file_{:06}.txt", i);
+				PathBuf::from(base).join(subdir).join(name)
 			}
 
 			PathPattern::Deep => {
@@ -140,8 +140,8 @@ fn generate_diverse_paths(count: usize, pattern: PathPattern, seed: u64) -> Vec<
 					path = path.join(format!("level_{}", level));
 				}
 
-				let filename = format!("deep_file_{:06}.dat", i);
-				path.join(filename)
+				let name = format!("deep_file_{:06}.dat", i);
+				path.join(name)
 			}
 
 			PathPattern::Unicode => {
@@ -155,8 +155,8 @@ fn generate_diverse_paths(count: usize, pattern: PathPattern, seed: u64) -> Vec<
 					format!("/home/user/{}", unicode_base)
 				};
 
-				let filename = format!("{}_{:04}.txt", unicode_file, i);
-				PathBuf::from(base_path).join(unicode_sub).join(filename)
+				let name = format!("{}_{:04}.txt", unicode_file, i);
+				PathBuf::from(base_path).join(unicode_sub).join(name)
 			}
 
 			PathPattern::HashBased => {
@@ -832,16 +832,74 @@ fn bench_path_operations(c: &mut Criterion) {
 			},
 		);
 
-		// Benchmark interned path prefix matching (requires string conversion)
 		group.bench_with_input(
-			BenchmarkId::new("interned_prefix_match", size),
+			BenchmarkId::new("interned_prefix_match_optimized", size),
 			&interned,
 			|b, interned| {
 				b.iter(|| {
 					let mut found = 0;
 					for id in interned {
-						let s = format!("{}", id);
+						if id.is_descendant_of_path("/home/") || id.is_descendant_of_path("/var/") {
+							found += 1;
+						}
+					}
+					black_box(found)
+				});
+			},
+		);
+
+		group.bench_with_input(
+			BenchmarkId::new("interned_prefix_match_resolved", size),
+			&interned,
+			|b, interned| {
+				b.iter(|| {
+					let mut found = 0;
+					for id in interned {
+						let p = id.resolve();
+						if p.starts_with(
+							<str as AsRef<Path>>::as_ref("/home/")
+								.canonicalize()
+								.unwrap(),
+						) || p.starts_with(
+							<str as AsRef<Path>>::as_ref("/var/")
+								.canonicalize()
+								.unwrap(),
+						) {
+							found += 1;
+						}
+					}
+					black_box(found)
+				});
+			},
+		);
+
+		group.bench_with_input(
+			BenchmarkId::new("string_descendant_of", size),
+			&strings,
+			|b, strings| {
+				b.iter(|| {
+					let mut found = 0;
+					for s in strings {
+						let s = std::path::absolute(PathBuf::from(s)).unwrap();
 						if s.starts_with("/home/") || s.starts_with("/var/") {
+							found += 1;
+						}
+					}
+					black_box(found)
+				});
+			},
+		);
+
+		let home = intern_path("/home/");
+		let var = intern_path("/var/");
+		group.bench_with_input(
+			BenchmarkId::new("interned_descendant_of", size),
+			&interned,
+			|b, interned| {
+				b.iter(|| {
+					let mut found = 0;
+					for id in interned {
+						if id.is_descendant_of(home) || id.is_descendant_of(var) {
 							found += 1;
 						}
 					}
@@ -867,9 +925,46 @@ fn bench_path_operations(c: &mut Criterion) {
 			},
 		);
 
-		// Benchmark interned path glob-like matching
+		// Benchmark interned path extension matching (optimized)
 		group.bench_with_input(
-			BenchmarkId::new("interned_glob_match", size),
+			BenchmarkId::new("interned_extension_match_optimized", size),
+			&interned,
+			|b, interned| {
+				b.iter(|| {
+					let mut found = 0;
+					for id in interned {
+						if id.has_extension("txt")
+							|| id.has_extension("jpg")
+							|| id.has_extension("dat")
+						{
+							found += 1;
+						}
+					}
+					black_box(found)
+				});
+			},
+		);
+
+		// Benchmark interned path name contains (optimized - no allocation)
+		group.bench_with_input(
+			BenchmarkId::new("interned_name_contains_optimized", size),
+			&interned,
+			|b, interned| {
+				b.iter(|| {
+					let mut found = 0;
+					for id in interned {
+						if id.name_contains("file") || id.name_contains("test") {
+							found += 1;
+						}
+					}
+					black_box(found)
+				});
+			},
+		);
+
+		// Benchmark interned path glob-like matching (old method for comparison)
+		group.bench_with_input(
+			BenchmarkId::new("interned_glob_match_string", size),
 			&interned,
 			|b, interned| {
 				b.iter(|| {
@@ -877,6 +972,30 @@ fn bench_path_operations(c: &mut Criterion) {
 					for id in interned {
 						let s = format!("{}", id);
 						if s.contains(".txt") || s.contains(".jpg") || s.contains(".dat") {
+							found += 1;
+						}
+					}
+					black_box(found)
+				});
+			},
+		);
+
+		// Benchmark interned path with compiled glob (most efficient for repeated patterns)
+		let txt_matcher = globset::Glob::new("*.txt").unwrap().compile_matcher();
+		let jpg_matcher = globset::Glob::new("*.jpg").unwrap().compile_matcher();
+		let dat_matcher = globset::Glob::new("*.dat").unwrap().compile_matcher();
+
+		group.bench_with_input(
+			BenchmarkId::new("interned_compiled_glob_match", size),
+			&(interned.clone(), txt_matcher, jpg_matcher, dat_matcher),
+			|b, (interned, txt, jpg, dat)| {
+				b.iter(|| {
+					let mut found = 0;
+					for id in interned {
+						if id.name_matches_compiled_glob(txt)
+							|| id.name_matches_compiled_glob(jpg)
+							|| id.name_matches_compiled_glob(dat)
+						{
 							found += 1;
 						}
 					}

@@ -417,7 +417,6 @@ impl RelationKey for SimilarityGroups {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use polars::prelude::*;
 
 	#[test]
 	fn test_type_safe_relation_storage() {
