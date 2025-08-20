@@ -26,46 +26,46 @@ pub struct CacheManager {
 
 // Convert in-memory DirEntryId struct path column to Utf8 for serialization
 fn df_with_string_paths(mut df: DataFrame) -> PolarsResult<DataFrame> {
-	if let Ok(col) = df.column("path") {
-		if let Ok(s) = col.struct_() {
-			let idx_ca = s.field_by_name("idx")?.u64()?.clone();
-			let gen_ca = s.field_by_name("gen")?.u64()?.clone();
-			let mut strings = Vec::with_capacity(df.height());
-			for i in 0..df.height() {
-				let idx = idx_ca.get(i).expect("idx not null") as usize;
-				let r#gen = gen_ca.get(i).expect("gen not null") as usize;
-				let id = DirEntryId::from_raw_parts_unchecked(idx, r#gen);
-				strings.push(id.to_string());
-			}
-			let new_series = Series::new("path", strings);
-			df.replace("path", new_series)?;
+	if let Ok(col) = df.column("path")
+		&& let Ok(s) = col.struct_()
+	{
+		let idx_ca = s.field_by_name("idx")?.u64()?.clone();
+		let gen_ca = s.field_by_name("gen")?.u64()?.clone();
+		let mut strings = Vec::with_capacity(df.height());
+		for i in 0..df.height() {
+			let idx = idx_ca.get(i).expect("idx not null") as usize;
+			let r#gen = gen_ca.get(i).expect("gen not null") as usize;
+			let id = DirEntryId::from_raw_parts_unchecked(idx, r#gen);
+			strings.push(id.to_string());
 		}
+		let new_series = Series::new("path", strings);
+		df.replace("path", new_series)?;
 	}
 	Ok(df)
 }
 
 // Convert serialized Utf8 path column to DirEntryId Struct for in-memory use
 fn df_with_interned_paths(mut df: DataFrame) -> PolarsResult<DataFrame> {
-	if let Ok(col) = df.column("path") {
-		if matches!(col.dtype(), DataType::String) {
-			let ca = col.str().expect("path column should be Utf8 when on-disk");
-			let (mut idxs, mut gens): (Vec<u64>, Vec<u64>) = (
-				Vec::with_capacity(df.height()),
-				Vec::with_capacity(df.height()),
-			);
-			for opt_s in ca.into_iter() {
-				let s = opt_s.expect("path should not be null");
-				let (i, g) = intern_path(s).raw_parts();
-				idxs.push(i as u64);
-				gens.push(g as u64);
-			}
-			let struct_series = StructChunked::new(
-				"path",
-				&[Series::new("idx", idxs), Series::new("gen", gens)],
-			)?
-			.into_series();
-			df.replace("path", struct_series)?;
+	if let Ok(col) = df.column("path")
+		&& matches!(col.dtype(), DataType::String)
+	{
+		let ca = col.str().expect("path column should be Utf8 when on-disk");
+		let (mut idxs, mut gens): (Vec<u64>, Vec<u64>) = (
+			Vec::with_capacity(df.height()),
+			Vec::with_capacity(df.height()),
+		);
+		for opt_s in ca.into_iter() {
+			let s = opt_s.expect("path should not be null");
+			let (i, g) = intern_path(s).raw_parts();
+			idxs.push(i as u64);
+			gens.push(g as u64);
 		}
+		let struct_series = StructChunked::new(
+			"path",
+			&[Series::new("idx", idxs), Series::new("gen", gens)],
+		)?
+		.into_series();
+		df.replace("path", struct_series)?;
 	}
 	Ok(df)
 }

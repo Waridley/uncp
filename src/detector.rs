@@ -79,10 +79,10 @@ use tracing::info;
 pub struct PathFilter {
 	/// Glob patterns that determine what files to include in scanning.
 	/// If empty, all files are included by default.
-	pub include_patterns: Vec<String>,
+	include_patterns: Vec<String>,
 	/// Glob patterns that exclude files from scanning.
 	/// Applied after include patterns for fine-grained control.
-	pub exclude_patterns: Vec<String>,
+	exclude_patterns: Vec<String>,
 	/// Compiled globset for include patterns (cached for performance)
 	include_globset: Option<GlobSet>,
 	/// Compiled globset for exclude patterns (cached for performance)
@@ -188,6 +188,14 @@ impl PathFilter {
 	/// Check if any patterns are configured
 	pub fn has_patterns(&self) -> bool {
 		!self.include_patterns.is_empty() || !self.exclude_patterns.is_empty()
+	}
+
+	pub fn include_patterns(&self) -> &Vec<String> {
+		&self.include_patterns
+	}
+
+	pub fn exclude_patterns(&self) -> &Vec<String> {
+		&self.exclude_patterns
 	}
 }
 
@@ -666,16 +674,12 @@ impl DuplicateDetector {
 		for i in 0..df.height() {
 			if let (Some(idx), Some(r#gen), Some(is_hashed)) =
 				(idx_ca.get(i), gen_ca.get(i), hashed.get(i))
+				&& !is_hashed
+				&& let Some(id) =
+					crate::paths::DirEntryId::from_raw_parts(idx as usize, r#gen as usize)
+				&& id.is_descendant_of_path(pref)
 			{
-				if !is_hashed {
-					if let Some(id) =
-						crate::paths::DirEntryId::from_raw_parts(idx as usize, r#gen as usize)
-					{
-						if id.is_descendant_of_path(pref) {
-							count += 1;
-						}
-					}
-				}
+				count += 1;
 			}
 		}
 		count
@@ -709,14 +713,12 @@ impl DuplicateDetector {
 		};
 		let mut count = 0usize;
 		for i in 0..df.height() {
-			if let (Some(idx), Some(r#gen)) = (idx_ca.get(i), gen_ca.get(i)) {
-				if let Some(id) =
+			if let (Some(idx), Some(r#gen)) = (idx_ca.get(i), gen_ca.get(i))
+				&& let Some(id) =
 					crate::paths::DirEntryId::from_raw_parts(idx as usize, r#gen as usize)
-				{
-					if id.is_descendant_of_path(pref) {
-						count += 1;
-					}
-				}
+				&& id.is_descendant_of_path(pref)
+			{
+				count += 1;
 			}
 		}
 		count
@@ -766,12 +768,10 @@ impl DuplicateDetector {
 				sizes.get(i),
 				file_types.get(i),
 				hashed_flags.get(i),
-			) {
-				if let Some(path) = DirEntryId::from_raw_parts(idx as usize, generation as usize) {
-					if path.is_descendant_of_path(pref) {
-						files.push((path, size, file_type.to_string(), hashed));
-					}
-				}
+			) && let Some(path) = DirEntryId::from_raw_parts(idx as usize, generation as usize)
+				&& path.is_descendant_of_path(pref)
+			{
+				files.push((path, size, file_type.to_string(), hashed));
 			}
 		}
 		files.sort_by(|a, b| b.1.cmp(&a.1));

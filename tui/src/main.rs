@@ -211,8 +211,8 @@ fn run(
 					in_filter_input = true;
 					filter_input_mode = FilterInputMode::Include;
 					// Initialize text buffers from current filter
-					filter_include_text = current_filter.include_patterns.join("\n");
-					filter_exclude_text = current_filter.exclude_patterns.join("\n");
+					filter_include_text = current_filter.include_patterns().join("\n");
+					filter_exclude_text = current_filter.exclude_patterns().join("\n");
 					input_buffer = String::new(); // Clear input buffer
 					pres = pres
 						.clone()
@@ -292,8 +292,8 @@ fn run(
 						let _ = cmds.try_send(EngineCommand::SetPath(current_path.clone()));
 
 						// Apply current filter if any
-						if !current_filter.include_patterns.is_empty()
-							|| !current_filter.exclude_patterns.is_empty()
+						if !current_filter.include_patterns().is_empty()
+							|| !current_filter.exclude_patterns().is_empty()
 						{
 							let _ =
 								cmds.try_send(EngineCommand::SetPathFilter(current_filter.clone()));
@@ -740,8 +740,8 @@ fn draw_enhanced(
 		header_spans.push(Span::styled(
 			format!(
 				"{}inc, {}exc",
-				current_filter.include_patterns.len(),
-				current_filter.exclude_patterns.len()
+				current_filter.include_patterns().len(),
+				current_filter.exclude_patterns().len()
 			),
 			Style::default().fg(Color::Yellow),
 		));

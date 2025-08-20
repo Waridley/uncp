@@ -31,7 +31,8 @@ pub fn intern_path(path: impl AsRef<Path>) -> DirEntryId {
 	let path = path.as_ref();
 	// Try to canonicalize, but fall back to the original path if it fails
 	// This allows interning of non-existent paths
-	let path = path.canonicalize()
+	let path = path
+		.canonicalize()
 		.or_else(|e| {
 			warn!("Failed to canonicalize {path:?}, falling back to absolute: {e}");
 			std::path::absolute(path)

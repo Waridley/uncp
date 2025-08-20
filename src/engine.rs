@@ -309,11 +309,7 @@ impl BackgroundEngine {
 								}
 							}
 							EngineCommand::SetPathFilter(filter) => {
-								info!(
-									"Engine: setting path filter with {} include patterns, {} exclude patterns",
-									filter.include_patterns.len(),
-									filter.exclude_patterns.len()
-								);
+								info!(?filter, "Engine: setting path filter");
 								detector.config.path_filter = filter;
 							}
 							EngineCommand::ClearPathFilter => {

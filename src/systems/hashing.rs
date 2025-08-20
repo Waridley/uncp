@@ -162,12 +162,11 @@ impl SystemRunner for ContentHashSystem {
 			.clone();
 		let mut paths: Vec<String> = Vec::with_capacity(to_hash_df.height());
 		for i in 0..to_hash_df.height() {
-			if let (Some(idx), Some(r#gen)) = (idx_ca.get(i), gen_ca.get(i)) {
-				if let Some(id) =
+			if let (Some(idx), Some(r#gen)) = (idx_ca.get(i), gen_ca.get(i))
+				&& let Some(id) =
 					crate::paths::DirEntryId::from_raw_parts(idx as usize, r#gen as usize)
-				{
-					paths.push(id.to_string());
-				}
+			{
+				paths.push(id.to_string());
 			}
 		}
 
