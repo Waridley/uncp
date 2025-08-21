@@ -736,7 +736,7 @@ mod tests {
 		}
 
 		// Clean up
-		let _ = std::fs::remove_dir_all(&temp_dir.join("test_nested"));
+		let _ = std::fs::remove_dir_all(temp_dir.join("test_nested"));
 	}
 
 	#[test]

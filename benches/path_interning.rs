@@ -8,13 +8,13 @@ use uncp::paths::{DirEntryId, intern_path};
 
 /// Estimate memory usage of a data structure
 fn estimate_memory_usage<T>(data: &[T]) -> usize {
-	std::mem::size_of::<T>() * data.len() + std::mem::size_of::<Vec<T>>()
+	std::mem::size_of_val(data) + std::mem::size_of::<Vec<T>>()
 }
 
 /// Estimate memory usage of strings including heap allocations
 fn estimate_string_memory(strings: &[String]) -> usize {
 	let vec_overhead = std::mem::size_of::<Vec<String>>();
-	let string_overhead = strings.len() * std::mem::size_of::<String>();
+	let string_overhead = std::mem::size_of_val(strings);
 	let heap_usage: usize = strings.iter().map(|s| s.capacity()).sum();
 	vec_overhead + string_overhead + heap_usage
 }
@@ -33,7 +33,7 @@ fn print_memory_comparison(size: usize) {
 	let string_memory = estimate_string_memory(&strings);
 
 	// Measure interned storage
-	let interned: Vec<DirEntryId> = paths.iter().map(|p| intern_path(p)).collect();
+	let interned: Vec<DirEntryId> = paths.iter().map(intern_path).collect();
 	let interned_memory = estimate_memory_usage(&interned);
 
 	println!(
@@ -369,7 +369,7 @@ fn bench_display_performance(c: &mut Criterion) {
 			.iter()
 			.map(|p| p.to_string_lossy().to_string())
 			.collect();
-		let interned: Vec<DirEntryId> = paths.iter().map(|p| intern_path(p)).collect();
+		let interned: Vec<DirEntryId> = paths.iter().map(intern_path).collect();
 
 		let mut group = c.benchmark_group("display_performance");
 		group.throughput(Throughput::Elements(size as u64));
@@ -382,7 +382,7 @@ fn bench_display_performance(c: &mut Criterion) {
 				b.iter(|| {
 					let mut total_len = 0;
 					for s in strings {
-						total_len += black_box(format!("{}", s)).len();
+						total_len += black_box(s.to_string()).len();
 					}
 					total_len
 				});
@@ -452,7 +452,7 @@ fn bench_path_iteration(c: &mut Criterion) {
 		.iter()
 		.map(|p| p.to_string_lossy().to_string())
 		.collect();
-	let interned: Vec<DirEntryId> = paths.iter().map(|p| intern_path(p)).collect();
+	let interned: Vec<DirEntryId> = paths.iter().map(intern_path).collect();
 
 	let mut group = c.benchmark_group("path_iteration");
 
@@ -502,7 +502,7 @@ fn bench_polars_dataframes(c: &mut Criterion) {
 		.unwrap();
 
 		// Create interned path-based DataFrame
-		let interned_paths: Vec<DirEntryId> = paths.iter().map(|p| intern_path(p)).collect();
+		let interned_paths: Vec<DirEntryId> = paths.iter().map(intern_path).collect();
 		let interned_values: Vec<AnyValue> = interned_paths.iter().map(|id| (*id).into()).collect();
 		let interned_df = df! {
 			"path" => interned_values,
@@ -641,10 +641,8 @@ fn bench_polars_dataframes(c: &mut Criterion) {
 		}
 		.unwrap();
 
-		let join_interned: Vec<AnyValue> = join_paths
-			.iter()
-			.map(|p| intern_path(PathBuf::from(p)).into())
-			.collect();
+		let join_interned: Vec<AnyValue> =
+			join_paths.iter().map(|p| intern_path(p).into()).collect();
 
 		let interned_join_df = df! {
 			"path" => join_interned,
@@ -745,7 +743,7 @@ fn bench_path_patterns(c: &mut Criterion) {
 			&paths,
 			|b, paths| {
 				b.iter(|| {
-					let interned: Vec<DirEntryId> = paths.iter().map(|p| intern_path(p)).collect();
+					let interned: Vec<DirEntryId> = paths.iter().map(intern_path).collect();
 					black_box(interned)
 				});
 			},
@@ -765,7 +763,7 @@ fn bench_path_operations(c: &mut Criterion) {
 			.iter()
 			.map(|p| p.to_string_lossy().to_string())
 			.collect();
-		let interned: Vec<DirEntryId> = paths.iter().map(|p| intern_path(p)).collect();
+		let interned: Vec<DirEntryId> = paths.iter().map(intern_path).collect();
 
 		// Create lookup targets (10% of the dataset)
 		let lookup_targets_str: Vec<String> = strings.iter().step_by(10).cloned().collect();
