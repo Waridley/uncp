@@ -2,12 +2,17 @@ use polars::prelude::*;
 use ratatui::layout::Constraint;
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Cell, Row, Table};
+use std::collections::HashMap;
 
 #[derive(Default)]
 pub struct RenderOptions<'a> {
 	pub column_constraints: Option<Vec<Constraint>>,
 	pub byte_size_cols: &'a [&'a str],
 	pub title: Option<String>,
+	// Optional per-column width if caller wants in-renderer truncation
+	pub col_widths: Option<HashMap<String, usize>>,
+	// Columns to apply tail-ellipsis
+	pub tail_ellipsis_cols: &'a [&'a str],
 }
 
 fn format_bytes(size: u64) -> String {
@@ -65,9 +70,42 @@ pub fn build_table<'a>(df: &DataFrame, opts: &RenderOptions<'a>) -> Table<'a> {
 					AnyValue::Int32(v) if v >= 0 => format_bytes(v as u64),
 					_ => av.to_string(),
 				}
+			} else if matches!(s.dtype(), DataType::String) {
+				// Render strings without quotes
+				let unquoted = s.str().ok().and_then(|ca| ca.get(row_idx)).unwrap_or("");
+				unquoted.to_string()
 			} else {
 				av.to_string()
 			};
+
+			// Optional tail-ellipsis based on per-column width
+			let text = if let (Some(widths), true) = (
+				&opts.col_widths,
+				opts.tail_ellipsis_cols.contains(&name.as_str()),
+			) {
+				if let Some(w) = widths.get(name) {
+					if *w > 0 && text.chars().count() > *w {
+						// Keep the rightmost part (filename) and prepend ellipsis
+						let take = w.saturating_sub(2);
+						let tail: String = text
+							.chars()
+							.rev()
+							.take(take)
+							.collect::<String>()
+							.chars()
+							.rev()
+							.collect();
+						format!(" …{}", tail)
+					} else {
+						text
+					}
+				} else {
+					text
+				}
+			} else {
+				text
+			};
+
 			cells.push(Cell::from(text));
 		}
 		rows.push(Row::new(cells));

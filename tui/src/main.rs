@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -763,11 +764,28 @@ fn draw(
 	};
 
 	// Build DataFrame with Path, Size, Type, Hashed
+	// Resolve current scan directory to canonical once (best-effort)
+	let scan_base: PathBuf = {
+		let p = std::path::Path::new(&pres.current_path_filter);
+		if p.is_absolute() {
+			p.to_path_buf()
+		} else {
+			std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+		}
+	};
+
 	let paths_series = Series::new(
 		"Path",
 		pres.file_table
 			.iter()
-			.map(|(p, _, _, _)| p.to_string())
+			.map(|(p, _, _, _)| {
+				let abs = p.resolve();
+				if let Ok(rel) = abs.strip_prefix(&scan_base) {
+					rel.display().to_string()
+				} else {
+					abs.display().to_string()
+				}
+			})
 			.collect::<Vec<_>>(),
 	);
 	let size_series = Series::new(
@@ -794,6 +812,17 @@ fn draw(
 	let df = DataFrame::new(vec![paths_series, size_series, type_series, hashed_series])
 		.unwrap_or_else(|_| DataFrame::empty());
 
+	// Compute concrete Path column width for tail-ellipsis.
+	// Note: table area has borders; subtract 2 from available width.
+	let table_area = chunks[1];
+	let inner_width = table_area.width.saturating_sub(2) as usize;
+	let col_widths: HashMap<String, usize> = {
+		let mut m = HashMap::new();
+		let path_w = inner_width * 57 / 100; // Path is 60% - spaces between columns
+		m.insert("Path".to_string(), path_w);
+		m
+	};
+
 	let opts = RenderOptions {
 		column_constraints: Some(vec![
 			Constraint::Percentage(60), // Path
@@ -803,6 +832,8 @@ fn draw(
 		]),
 		byte_size_cols: &["Size"],
 		title: Some(title.clone()),
+		col_widths: Some(col_widths),
+		tail_ellipsis_cols: &["Path"],
 	};
 	let table = build_table(&df, &opts);
 	frame.render_stateful_widget(table, chunks[1], table_state);
