@@ -290,7 +290,7 @@ dependencies = [
  "async-task",
  "concurrent-queue",
  "fastrand 2.0.1",
- "futures-lite 2.3.0",
+ "futures-lite 2.6.1",
  "slab",
 ]
 
@@ -314,7 +314,7 @@ checksum = "ebcd09b382f40fcd159c2d695175b2ae620ffa5f3bd6f664131efff4e8b9e04a"
 dependencies = [
  "async-lock 3.3.0",
  "blocking",
- "futures-lite 2.3.0",
+ "futures-lite 2.6.1",
 ]
 
 [[package]]
@@ -347,7 +347,7 @@ dependencies = [
  "cfg-if 1.0.0",
  "concurrent-queue",
  "futures-io",
- "futures-lite 2.3.0",
+ "futures-lite 2.6.1",
  "parking",
  "polling 3.5.0",
  "rustix 0.38.34",
@@ -395,7 +395,7 @@ checksum = "b948000fad4873c1c9339d60f2623323a0cfd3816e5181033c6a5cb68b2accf7"
 dependencies = [
  "async-io 2.3.2",
  "blocking",
- "futures-lite 2.3.0",
+ "futures-lite 2.6.1",
 ]
 
 [[package]]
@@ -429,7 +429,7 @@ dependencies = [
  "blocking",
  "cfg-if 1.0.0",
  "event-listener 5.4.1",
- "futures-lite 2.3.0",
+ "futures-lite 2.6.1",
  "rustix 0.38.34",
  "tracing",
 ]
@@ -670,7 +670,7 @@ dependencies = [
  "async-channel 2.5.0",
  "async-task",
  "futures-io",
- "futures-lite 2.3.0",
+ "futures-lite 2.6.1",
  "piper",
 ]
 
@@ -2075,9 +2075,9 @@ dependencies = [
 
 [[package]]
 name = "futures-lite"
-version = "2.3.0"
+version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52527eb5074e35e9339c6b4e8d12600c7128b68fb25dcb9fa9dec18f7c25f3a5"
+checksum = "f78e10609fe0e0b3f4157ffab1876319b5b0db102a2c60dc4626306dc46b44ad"
 dependencies = [
  "fastrand 2.0.1",
  "futures-core",
@@ -5879,7 +5879,7 @@ dependencies = [
  "async-net 2.0.0",
  "async-process 2.3.0",
  "blocking",
- "futures-lite 2.3.0",
+ "futures-lite 2.6.1",
 ]
 
 [[package]]
@@ -6721,7 +6721,7 @@ dependencies = [
  "criterion",
  "dirs 5.0.1",
  "futures",
- "futures-lite 2.3.0",
+ "futures-lite 2.6.1",
  "globset",
  "image 0.24.9",
  "img_hash",
@@ -6755,7 +6755,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dirs 5.0.1",
- "futures-lite 2.3.0",
+ "futures-lite 2.6.1",
  "rayon",
  "smol 2.0.2",
  "tracing",
@@ -6780,7 +6780,7 @@ dependencies = [
  "async-executor",
  "crossterm 0.29.0",
  "dirs 5.0.1",
- "futures-lite 2.3.0",
+ "futures-lite 2.6.1",
  "polars",
  "ratatui",
  "rayon",
