@@ -14,14 +14,18 @@ use ratatui::{
 	layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
 	style::{Color, Modifier, Style},
 	text::{Line, Span},
-	widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap},
+	widgets::{Block, Borders, Clear, Paragraph, TableState, Wrap},
 	Frame,
 };
 
+use polars::prelude::*;
 use tracing::{debug, info};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use uncp::engine::{BackgroundEngine, EngineCommand, EngineEvent};
 use uncp::ui::PresentationState;
+
+mod df_render;
+use df_render::{build_table, RenderOptions};
 
 const SPINNER: &[char] = &['⠋', '⠙', '⠸', '⠴', '⠦', '⠇'];
 
@@ -647,7 +651,7 @@ fn run(
 			None
 		};
 		terminal.draw(|f| {
-			draw_enhanced(
+			draw(
 				f,
 				&pres,
 				in_path_input,
@@ -697,7 +701,7 @@ enum Action {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_enhanced(
+fn draw(
 	frame: &mut Frame,
 	pres: &PresentationState,
 	in_path_input: bool,
@@ -751,50 +755,56 @@ fn draw_enhanced(
 		.block(Block::default().borders(Borders::ALL).title("Summary"));
 	frame.render_widget(header, chunks[0]);
 
-	// Body: file table sorted by size
+	// Body: build a DataFrame for the current file table and render generically
 	let title = if pres.current_path_filter.is_empty() {
 		"Files (sorted by size)".to_string()
 	} else {
 		format!("Files in '{}' (sorted by size)", pres.current_path_filter)
 	};
 
-	// Always show file table
-	let header = Row::new(vec![
-		Cell::from("Path"),
-		Cell::from("Size"),
-		Cell::from("Type"),
-		Cell::from("Hashed"),
-	])
-	.style(Style::default().add_modifier(Modifier::BOLD));
+	// Build DataFrame with Path, Size, Type, Hashed
+	let paths_series = Series::new(
+		"Path",
+		pres.file_table
+			.iter()
+			.map(|(p, _, _, _)| p.to_string())
+			.collect::<Vec<_>>(),
+	);
+	let size_series = Series::new(
+		"Size",
+		pres.file_table
+			.iter()
+			.map(|(_, s, _, _)| *s)
+			.collect::<Vec<_>>(),
+	);
+	let type_series = Series::new(
+		"Type",
+		pres.file_table
+			.iter()
+			.map(|(_, _, t, _)| t.clone())
+			.collect::<Vec<_>>(),
+	);
+	let hashed_series = Series::new(
+		"Hashed",
+		pres.file_table
+			.iter()
+			.map(|(_, _, _, h)| *h)
+			.collect::<Vec<_>>(),
+	);
+	let df = DataFrame::new(vec![paths_series, size_series, type_series, hashed_series])
+		.unwrap_or_else(|_| DataFrame::empty());
 
-	let rows: Vec<Row> = pres
-		.file_table
-		.iter()
-		.map(|(path, size, file_type, hashed)| {
-			let size_str = format_file_size(*size);
-			let hashed_str = if *hashed { "✓" } else { "○" };
-			Row::new(vec![
-				Cell::from(format!("{path}")),
-				Cell::from(size_str),
-				Cell::from(file_type.as_str()),
-				Cell::from(hashed_str),
-			])
-		})
-		.collect();
-
-	let table = Table::new(
-		rows,
-		[
+	let opts = RenderOptions {
+		column_constraints: Some(vec![
 			Constraint::Percentage(60), // Path
 			Constraint::Percentage(15), // Size
 			Constraint::Percentage(15), // Type
 			Constraint::Percentage(10), // Hashed
-		],
-	)
-	.header(header)
-	.row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-	.block(Block::default().borders(Borders::ALL).title(title));
-
+		]),
+		byte_size_cols: &["Size"],
+		title: Some(title.clone()),
+	};
+	let table = build_table(&df, &opts);
 	frame.render_stateful_widget(table, chunks[1], table_state);
 
 	// Enhanced footer with detailed status
@@ -1289,22 +1299,4 @@ fn handle_events(
 		}
 	}
 	Ok(actions)
-}
-
-/// Format file size in human-readable format
-fn format_file_size(size: u64) -> String {
-	const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-	let mut size_f = size as f64;
-	let mut unit_index = 0;
-
-	while size_f >= 1024.0 && unit_index < UNITS.len() - 1 {
-		size_f /= 1024.0;
-		unit_index += 1;
-	}
-
-	if unit_index == 0 {
-		format!("{} {}", size, UNITS[unit_index])
-	} else {
-		format!("{:.1} {}", size_f, UNITS[unit_index])
-	}
 }
