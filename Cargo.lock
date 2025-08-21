@@ -275,9 +275,9 @@ dependencies = [
 
 [[package]]
 name = "async-channel"
-version = "2.2.0"
+version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f28243a43d821d11341ab73c80bed182dc015c514b951616cf79bd4af39af0c3"
+checksum = "9f2776ead772134d55b62dd45e59a79e21612d85d0af729b8b7d3967d601a62a"
 dependencies = [
  "concurrent-queue",
  "event-listener 5.4.1",
@@ -426,7 +426,7 @@ version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63255f1dc2381611000436537bbedfe83183faa303a5a0edaf191edef06526bb"
 dependencies = [
- "async-channel 2.2.0",
+ "async-channel 2.3.0",
  "async-io 2.3.2",
  "async-lock 3.3.0",
  "async-signal",
@@ -661,7 +661,7 @@ version = "1.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e83f8d02be6967315521be875afa792a316e28d57b5a2d401897e2a7921b7f21"
 dependencies = [
- "async-channel 2.2.0",
+ "async-channel 2.3.0",
  "async-task",
  "futures-io",
  "futures-lite 2.3.0",
@@ -4909,7 +4909,7 @@ version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a33bd3e260892199c3ccfc487c88b2da2265080acb316cd920da72fdfd7c599f"
 dependencies = [
- "async-channel 2.2.0",
+ "async-channel 2.3.0",
  "async-executor",
  "async-fs 2.1.2",
  "async-io 2.3.2",
@@ -5630,7 +5630,7 @@ name = "uncp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-channel 2.2.0",
+ "async-channel 2.3.0",
  "async-trait",
  "bincode",
  "blake3",
@@ -5693,7 +5693,7 @@ dependencies = [
 name = "uncp-tui"
 version = "0.1.0"
 dependencies = [
- "async-channel 2.2.0",
+ "async-channel 2.3.0",
  "async-executor",
  "crossterm 0.29.0",
  "dirs 5.0.1",
