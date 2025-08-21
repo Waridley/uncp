@@ -19,13 +19,14 @@ impl RelationKey for SimilarImages {
 	}
 
 	fn create_schema() -> PolarsResult<DataFrame> {
-		let file_paths = ListChunked::full_null_with_dtype("file_paths", 0, &DataType::String);
+		let file_paths =
+			ListChunked::full_null_with_dtype("file_paths".into(), 0, &DataType::String);
 		DataFrame::new(vec![
-			Series::new("perceptual_hash", Vec::<String>::new()),
-			Series::new("similarity_threshold", Vec::<f64>::new()),
-			file_paths.into_series(),
-			Series::new("confidence_score", Vec::<f64>::new()),
-			Series::new("detected_at", Vec::<i64>::new()),
+			Series::new("perceptual_hash".into(), Vec::<String>::new()).into(),
+			Series::new("similarity_threshold".into(), Vec::<f64>::new()).into(),
+			file_paths.into_series().into(),
+			Series::new("confidence_score".into(), Vec::<f64>::new()).into(),
+			Series::new("detected_at".into(), Vec::<i64>::new()).into(),
 		])
 	}
 }
@@ -41,19 +42,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	// Add some identical hash relations
 	println!("\n📁 Adding identical hash relations...");
 	let hash_paths_series = Series::new(
-		"file_paths",
+		"file_paths".into(),
 		vec![
-			Series::new("", vec!["photo1.jpg", "photo1_copy.jpg"]),
-			Series::new("", vec!["document.pdf", "backup/document.pdf"]),
+			Series::new("".into(), vec!["photo1.jpg", "photo1_copy.jpg"]),
+			Series::new("".into(), vec!["document.pdf", "backup/document.pdf"]),
 		],
 	);
 
 	let hash_data = DataFrame::new(vec![
-		Series::new("hash_value", vec!["abc123def456", "789xyz012abc"]),
-		Series::new("hash_type", vec!["blake3", "blake3"]),
-		hash_paths_series,
-		Series::new("first_seen", vec![1234567890i64, 1234567891i64]),
-		Series::new("file_count", vec![2u32, 2u32]),
+		Series::new("hash_value".into(), vec!["abc123def456", "789xyz012abc"]).into(),
+		Series::new("hash_type".into(), vec!["blake3", "blake3"]).into(),
+		hash_paths_series.into(),
+		Series::new("first_seen".into(), vec![1234567890i64, 1234567891i64]).into(),
+		Series::new("file_count".into(), vec![2u32, 2u32]).into(),
 	])?;
 
 	store.insert::<IdenticalHashes>(hash_data)?;
@@ -65,18 +66,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	// Add same filename relations
 	println!("\n📄 Adding same filename relations...");
 	let filename_paths_series = Series::new(
-		"file_paths",
+		"file_paths".into(),
 		vec![Series::new(
-			"",
+			"".into(),
 			vec!["config.json", "backup/config.json", "old/config.json"],
 		)],
 	);
 
 	let filename_data = DataFrame::new(vec![
-		Series::new("filename", vec!["config.json"]),
-		filename_paths_series,
-		Series::new("file_count", vec![3u32]),
-		Series::new("first_seen", vec![1234567892i64]),
+		Series::new("filename".into(), vec!["config.json"]).into(),
+		filename_paths_series.into(),
+		Series::new("file_count".into(), vec![3u32]).into(),
+		Series::new("first_seen".into(), vec![1234567892i64]).into(),
 	])?;
 
 	store.insert::<SameFileName>(filename_data)?;
@@ -88,18 +89,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	// Add same size relations
 	println!("\n📏 Adding same size relations...");
 	let size_paths_series = Series::new(
-		"file_paths",
+		"file_paths".into(),
 		vec![
-			Series::new("", vec!["small1.txt", "small2.txt"]),
-			Series::new("", vec!["large1.bin", "large2.bin", "large3.bin"]),
+			Series::new("".into(), vec!["small1.txt", "small2.txt"]),
+			Series::new("".into(), vec!["large1.bin", "large2.bin", "large3.bin"]),
 		],
 	);
 
 	let size_data = DataFrame::new(vec![
-		Series::new("size_bytes", vec![1024u64, 1048576u64]),
-		size_paths_series,
-		Series::new("file_count", vec![2u32, 3u32]),
-		Series::new("first_seen", vec![1234567893i64, 1234567894i64]),
+		Series::new("size_bytes".into(), vec![1024u64, 1048576u64]).into(),
+		size_paths_series.into(),
+		Series::new("file_count".into(), vec![2u32, 3u32]).into(),
+		Series::new("first_seen".into(), vec![1234567893i64, 1234567894i64]).into(),
 	])?;
 
 	store.insert::<SameSize>(size_data)?;
@@ -111,19 +112,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	// Add custom relation type
 	println!("\n🖼️  Adding custom similar images relation...");
 	let image_paths_series = Series::new(
-		"file_paths",
+		"file_paths".into(),
 		vec![Series::new(
-			"",
+			"".into(),
 			vec!["sunset1.jpg", "sunset2.jpg", "sunset3.jpg"],
 		)],
 	);
 
 	let image_data = DataFrame::new(vec![
-		Series::new("perceptual_hash", vec!["phash_abc123"]),
-		Series::new("similarity_threshold", vec![0.85f64]),
-		image_paths_series,
-		Series::new("confidence_score", vec![0.92f64]),
-		Series::new("detected_at", vec![1234567895i64]),
+		Series::new("perceptual_hash".into(), vec!["phash_abc123"]).into(),
+		Series::new("similarity_threshold".into(), vec![0.85f64]).into(),
+		image_paths_series.into(),
+		Series::new("confidence_score".into(), vec![0.92f64]).into(),
+		Series::new("detected_at".into(), vec![1234567895i64]).into(),
 	])?;
 
 	store.insert::<SimilarImages>(image_data)?;
@@ -177,16 +178,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	// Add more hash data to second store
 	let more_hash_paths = Series::new(
-		"file_paths",
-		vec![Series::new("", vec!["video1.mp4", "video1_backup.mp4"])],
+		"file_paths".into(),
+		vec![Series::new(
+			"".into(),
+			vec!["video1.mp4", "video1_backup.mp4"],
+		)],
 	);
 
 	let more_hash_data = DataFrame::new(vec![
-		Series::new("hash_value", vec!["def456ghi789"]),
-		Series::new("hash_type", vec!["blake3"]),
-		more_hash_paths,
-		Series::new("first_seen", vec![1234567896i64]),
-		Series::new("file_count", vec![2u32]),
+		Series::new("hash_value".into(), vec!["def456ghi789"]).into(),
+		Series::new("hash_type".into(), vec!["blake3"]).into(),
+		more_hash_paths.into(),
+		Series::new("first_seen".into(), vec![1234567896i64]).into(),
+		Series::new("file_count".into(), vec![2u32]).into(),
 	])?;
 
 	store2.insert::<IdenticalHashes>(more_hash_data)?;

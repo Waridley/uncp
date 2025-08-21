@@ -105,7 +105,7 @@ impl SystemRunner for ContentHashSystem {
 				mask.push(keep);
 			}
 			to_hash_df
-				.filter(&BooleanChunked::from_slice("mask", &mask))
+				.filter(&BooleanChunked::from_slice("mask".into(), &mask))
 				.map_err(|e| SystemError::ExecutionFailed {
 					system: self.name().into(),
 					reason: e.to_string(),
@@ -240,19 +240,34 @@ impl SystemRunner for ContentHashSystem {
 				(i as u64, g as u64)
 			})
 			.unzip();
-		let path_series = StructChunked::new(
-			"path",
-			&[Series::new("idx", idxs), Series::new("gen", gens)],
+		let fields = vec![
+			Field::new("idx".into(), DataType::UInt64),
+			Field::new("gen".into(), DataType::UInt64),
+		];
+		let values: Vec<AnyValue<'static>> = idxs
+			.into_iter()
+			.zip(gens)
+			.map(|(i, g)| {
+				AnyValue::StructOwned(Box::new((
+					vec![AnyValue::UInt64(i), AnyValue::UInt64(g)],
+					fields.clone(),
+				)))
+			})
+			.collect();
+		let path_series = Series::from_any_values_and_dtype(
+			"path".into(),
+			&values,
+			&DataType::Struct(fields.clone()),
+			true,
 		)
 		.map_err(|e| SystemError::ExecutionFailed {
 			system: self.name().into(),
 			reason: e.to_string(),
-		})?
-		.into_series();
+		})?;
 		let update_df = DataFrame::new(vec![
-			path_series,
-			Series::new("blake3_hash", upd_hashes),
-			Series::new("hashed", upd_flags),
+			path_series.into(),
+			Series::new("blake3_hash".into(), upd_hashes).into(),
+			Series::new("hashed".into(), upd_flags).into(),
 		])
 		.map_err(|e| SystemError::ExecutionFailed {
 			system: self.name().into(),
@@ -260,20 +275,21 @@ impl SystemRunner for ContentHashSystem {
 		})?;
 
 		// Merge updates into state using a left join and coalesce
-		let updated = state
-			.data
-			.clone()
-			.lazy()
+		let left_lf = state.data.clone().lazy().with_columns([
+			col("path").struct_().field_by_index(0).alias("__join_idx"),
+			col("path").struct_().field_by_index(1).alias("__join_gen"),
+		]);
+
+		let right_lf = update_df.clone().lazy().with_columns([
+			col("path").struct_().field_by_index(0).alias("__join_idx"),
+			col("path").struct_().field_by_index(1).alias("__join_gen"),
+		]);
+
+		let updated = left_lf
 			.join(
-				update_df.clone().lazy(),
-				[
-					col("path").struct_().field_by_index(0), // idx component
-					col("path").struct_().field_by_index(1), // generation component
-				],
-				[
-					col("path").struct_().field_by_index(0), // idx component
-					col("path").struct_().field_by_index(1), // generation component
-				],
+				right_lf,
+				[col("__join_idx"), col("__join_gen")],
+				[col("__join_idx"), col("__join_gen")],
 				JoinArgs::new(JoinType::Left),
 			)
 			.with_columns([
@@ -286,7 +302,12 @@ impl SystemRunner for ContentHashSystem {
 					.otherwise(col("hashed"))
 					.alias("hashed"),
 			])
-			.select([all().exclude(["blake3_hash_right", "hashed_right"])])
+			.drop(cols([
+				"blake3_hash_right",
+				"hashed_right",
+				"__join_idx",
+				"__join_gen",
+			]))
 			.collect()
 			.map_err(|e| SystemError::ExecutionFailed {
 				system: self.name().into(),

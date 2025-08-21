@@ -351,8 +351,8 @@ impl DirEntryId {
 				AnyValue::UInt64(generation as u64),
 			],
 			vec![
-				Field::new("idx", DataType::UInt64),
-				Field::new("gen", DataType::UInt64),
+				Field::new("idx".into(), DataType::UInt64),
+				Field::new("gen".into(), DataType::UInt64),
 			],
 		)))
 	}
@@ -385,8 +385,8 @@ fn dbg_assert_struct_fields(fields: &[Field]) {
 	#[cfg(debug_assertions)]
 	{
 		debug_assert_eq!(fields.len(), 2);
-		debug_assert_eq!(fields[0].name(), "idx");
-		debug_assert_eq!(fields[1].name(), "gen");
+		debug_assert_eq!(fields[0].name().as_str(), "idx");
+		debug_assert_eq!(fields[1].name().as_str(), "gen");
 	}
 }
 

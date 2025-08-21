@@ -1,8 +1,8 @@
 //! Disk caching and persistence (Parquet + JSON metadata)
 
 use chrono::Utc;
-use polars::io::parquet::{ParquetCompression, ParquetReader, ParquetWriter};
 use polars::prelude::*;
+use polars::prelude::{ParquetCompression, ParquetReader, ParquetWriter};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::path::PathBuf;
@@ -38,7 +38,7 @@ fn df_with_string_paths(mut df: DataFrame) -> PolarsResult<DataFrame> {
 			let id = DirEntryId::from_raw_parts_unchecked(idx, r#gen);
 			strings.push(id.to_string());
 		}
-		let new_series = Series::new("path", strings);
+		let new_series = Series::new("path".into(), strings);
 		df.replace("path", new_series)?;
 	}
 	Ok(df)
@@ -60,11 +60,26 @@ fn df_with_interned_paths(mut df: DataFrame) -> PolarsResult<DataFrame> {
 			idxs.push(i as u64);
 			gens.push(g as u64);
 		}
-		let struct_series = StructChunked::new(
-			"path",
-			&[Series::new("idx", idxs), Series::new("gen", gens)],
-		)?
-		.into_series();
+		let fields = vec![
+			Field::new("idx".into(), DataType::UInt64),
+			Field::new("gen".into(), DataType::UInt64),
+		];
+		let values: Vec<AnyValue<'static>> = idxs
+			.into_iter()
+			.zip(gens)
+			.map(|(i, g)| {
+				AnyValue::StructOwned(Box::new((
+					vec![AnyValue::UInt64(i), AnyValue::UInt64(g)],
+					fields.clone(),
+				)))
+			})
+			.collect();
+		let struct_series = Series::from_any_values_and_dtype(
+			"path".into(),
+			&values,
+			&DataType::Struct(fields.clone()),
+			true,
+		)?;
 		df.replace("path", struct_series)?;
 	}
 	Ok(df)

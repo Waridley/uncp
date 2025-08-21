@@ -326,13 +326,14 @@ impl RelationKey for IdenticalHashes {
 	fn create_schema() -> PolarsResult<DataFrame> {
 		use polars::prelude::*;
 
-		let file_paths = ListChunked::full_null_with_dtype("file_paths", 0, &DataType::String);
+		let file_paths =
+			ListChunked::full_null_with_dtype("file_paths".into(), 0, &DataType::String);
 		DataFrame::new(vec![
-			Series::new("hash_value", Vec::<String>::new()),
-			Series::new("hash_type", Vec::<String>::new()),
-			file_paths.into_series(),
-			Series::new("first_seen", Vec::<i64>::new()),
-			Series::new("file_count", Vec::<u32>::new()),
+			Series::new("hash_value".into(), Vec::<String>::new()).into(),
+			Series::new("hash_type".into(), Vec::<String>::new()).into(),
+			file_paths.into_series().into(),
+			Series::new("first_seen".into(), Vec::<i64>::new()).into(),
+			Series::new("file_count".into(), Vec::<u32>::new()).into(),
 		])
 	}
 }
@@ -352,12 +353,13 @@ impl RelationKey for SameFileName {
 	fn create_schema() -> PolarsResult<DataFrame> {
 		use polars::prelude::*;
 
-		let file_paths = ListChunked::full_null_with_dtype("file_paths", 0, &DataType::String);
+		let file_paths =
+			ListChunked::full_null_with_dtype("file_paths".into(), 0, &DataType::String);
 		DataFrame::new(vec![
-			Series::new("filename", Vec::<String>::new()),
-			file_paths.into_series(),
-			Series::new("file_count", Vec::<u32>::new()),
-			Series::new("first_seen", Vec::<i64>::new()),
+			Series::new("filename".into(), Vec::<String>::new()).into(),
+			file_paths.into_series().into(),
+			Series::new("file_count".into(), Vec::<u32>::new()).into(),
+			Series::new("first_seen".into(), Vec::<i64>::new()).into(),
 		])
 	}
 }
@@ -377,12 +379,13 @@ impl RelationKey for SameSize {
 	fn create_schema() -> PolarsResult<DataFrame> {
 		use polars::prelude::*;
 
-		let file_paths = ListChunked::full_null_with_dtype("file_paths", 0, &DataType::String);
+		let file_paths =
+			ListChunked::full_null_with_dtype("file_paths".into(), 0, &DataType::String);
 		DataFrame::new(vec![
-			Series::new("size_bytes", Vec::<u64>::new()),
-			file_paths.into_series(),
-			Series::new("file_count", Vec::<u32>::new()),
-			Series::new("first_seen", Vec::<i64>::new()),
+			Series::new("size_bytes".into(), Vec::<u64>::new()).into(),
+			file_paths.into_series().into(),
+			Series::new("file_count".into(), Vec::<u32>::new()).into(),
+			Series::new("first_seen".into(), Vec::<i64>::new()).into(),
 		])
 	}
 }
@@ -402,14 +405,15 @@ impl RelationKey for SimilarityGroups {
 	fn create_schema() -> PolarsResult<DataFrame> {
 		use polars::prelude::*;
 
-		let file_paths = ListChunked::full_null_with_dtype("file_paths", 0, &DataType::String);
+		let file_paths =
+			ListChunked::full_null_with_dtype("file_paths".into(), 0, &DataType::String);
 		DataFrame::new(vec![
-			Series::new("group_id", Vec::<String>::new()),
-			Series::new("group_type", Vec::<String>::new()),
-			file_paths.into_series(),
-			Series::new("metadata", Vec::<String>::new()),
-			Series::new("created_at", Vec::<i64>::new()),
-			Series::new("similarity_threshold", Vec::<f64>::new()),
+			Series::new("group_id".into(), Vec::<String>::new()).into(),
+			Series::new("group_type".into(), Vec::<String>::new()).into(),
+			file_paths.into_series().into(),
+			Series::new("metadata".into(), Vec::<String>::new()).into(),
+			Series::new("created_at".into(), Vec::<i64>::new()).into(),
+			Series::new("similarity_threshold".into(), Vec::<f64>::new()).into(),
 		])
 	}
 }
@@ -429,19 +433,19 @@ mod tests {
 
 		// Create some test data for identical hashes
 		let file_paths_series = Series::new(
-			"file_paths",
+			"file_paths".into(),
 			vec![
-				Series::new("", vec!["file1.txt", "file2.txt"]),
-				Series::new("", vec!["file3.txt", "file4.txt"]),
+				Series::new("".into(), vec!["file1.txt", "file2.txt"]),
+				Series::new("".into(), vec!["file3.txt", "file4.txt"]),
 			],
 		);
 
 		let hash_data = DataFrame::new(vec![
-			Series::new("hash_value", vec!["abc123", "def456"]),
-			Series::new("hash_type", vec!["blake3", "blake3"]),
-			file_paths_series,
-			Series::new("first_seen", vec![1234567890i64, 1234567891i64]),
-			Series::new("file_count", vec![2u32, 2u32]),
+			Series::new("hash_value".into(), vec!["abc123", "def456"]).into(),
+			Series::new("hash_type".into(), vec!["blake3", "blake3"]).into(),
+			file_paths_series.into(),
+			Series::new("first_seen".into(), vec![1234567890i64, 1234567891i64]).into(),
+			Series::new("file_count".into(), vec![2u32, 2u32]).into(),
 		])
 		.unwrap();
 
@@ -474,34 +478,34 @@ mod tests {
 
 		// Add identical hashes relation
 		let file_paths_series = Series::new(
-			"file_paths",
-			vec![Series::new("", vec!["file1.txt", "file2.txt"])],
+			"file_paths".into(),
+			vec![Series::new("".into(), vec!["file1.txt", "file2.txt"])],
 		);
 
 		let hash_data = DataFrame::new(vec![
-			Series::new("hash_value", vec!["abc123"]),
-			Series::new("hash_type", vec!["blake3"]),
-			file_paths_series,
-			Series::new("first_seen", vec![1234567890i64]),
-			Series::new("file_count", vec![2u32]),
+			Series::new("hash_value".into(), vec!["abc123"]).into(),
+			Series::new("hash_type".into(), vec!["blake3"]).into(),
+			file_paths_series.into(),
+			Series::new("first_seen".into(), vec![1234567890i64]).into(),
+			Series::new("file_count".into(), vec![2u32]).into(),
 		])
 		.unwrap();
 		store.insert::<IdenticalHashes>(hash_data).unwrap();
 
 		// Add same filename relation
 		let filename_paths_series = Series::new(
-			"file_paths",
+			"file_paths".into(),
 			vec![Series::new(
-				"",
+				"".into(),
 				vec!["/home/user/document.pdf", "/backup/document.pdf"],
 			)],
 		);
 
 		let filename_data = DataFrame::new(vec![
-			Series::new("filename", vec!["document.pdf"]),
-			filename_paths_series,
-			Series::new("file_count", vec![2u32]),
-			Series::new("first_seen", vec![1234567890i64]),
+			Series::new("filename".into(), vec!["document.pdf"]).into(),
+			filename_paths_series.into(),
+			Series::new("file_count".into(), vec![2u32]).into(),
+			Series::new("first_seen".into(), vec![1234567890i64]).into(),
 		])
 		.unwrap();
 		store.insert::<SameFileName>(filename_data).unwrap();
@@ -528,29 +532,33 @@ mod tests {
 		let mut store2 = RelationStore::new();
 
 		// Add data to first store
-		let file_paths1_series =
-			Series::new("file_paths", vec![Series::new("", vec!["file1.txt"])]);
+		let file_paths1_series = Series::new(
+			"file_paths".into(),
+			vec![Series::new("".into(), vec!["file1.txt"])],
+		);
 
 		let data1 = DataFrame::new(vec![
-			Series::new("hash_value", vec!["abc123"]),
-			Series::new("hash_type", vec!["blake3"]),
-			file_paths1_series,
-			Series::new("first_seen", vec![1234567890i64]),
-			Series::new("file_count", vec![1u32]),
+			Series::new("hash_value".into(), vec!["abc123"]).into(),
+			Series::new("hash_type".into(), vec!["blake3"]).into(),
+			file_paths1_series.into(),
+			Series::new("first_seen".into(), vec![1234567890i64]).into(),
+			Series::new("file_count".into(), vec![1u32]).into(),
 		])
 		.unwrap();
 		store1.insert::<IdenticalHashes>(data1).unwrap();
 
 		// Add different data to second store
-		let file_paths2_series =
-			Series::new("file_paths", vec![Series::new("", vec!["file2.txt"])]);
+		let file_paths2_series = Series::new(
+			"file_paths".into(),
+			vec![Series::new("".into(), vec!["file2.txt"])],
+		);
 
 		let data2 = DataFrame::new(vec![
-			Series::new("hash_value", vec!["def456"]),
-			Series::new("hash_type", vec!["blake3"]),
-			file_paths2_series,
-			Series::new("first_seen", vec![1234567891i64]),
-			Series::new("file_count", vec![1u32]),
+			Series::new("hash_value".into(), vec!["def456"]).into(),
+			Series::new("hash_type".into(), vec!["blake3"]).into(),
+			file_paths2_series.into(),
+			Series::new("first_seen".into(), vec![1234567891i64]).into(),
+			Series::new("file_count".into(), vec![1u32]).into(),
 		])
 		.unwrap();
 		store2.insert::<IdenticalHashes>(data2).unwrap();

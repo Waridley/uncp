@@ -151,22 +151,22 @@ impl ScanState {
 	/// Create the schema for the main DataFrame
 	fn create_empty_dataframe() -> PolarsResult<DataFrame> {
 		let path_dtype = DataType::Struct(vec![
-			Field::new("idx", DataType::UInt64),
-			Field::new("gen", DataType::UInt64),
+			Field::new("idx".into(), DataType::UInt64),
+			Field::new("gen".into(), DataType::UInt64),
 		]);
 		DataFrame::new(vec![
-			Series::new_empty("path", &path_dtype),
-			Series::new("size", Vec::<u64>::new()),
-			Series::new("modified", Vec::<i64>::new()), // Unix timestamp in nanoseconds
-			Series::new("file_type", Vec::<String>::new()),
-			Series::new("content_loaded", Vec::<bool>::new()),
-			Series::new("hashed", Vec::<bool>::new()),
-			Series::new("similarity_computed", Vec::<bool>::new()),
-			Series::new("scan_id", Vec::<u32>::new()),
-			Series::new("last_processed", Vec::<i64>::new()),
-			Series::new("blake3_hash", Vec::<Option<String>>::new()),
-			Series::new("perceptual_hash", Vec::<Option<String>>::new()),
-			Series::new("text_hash", Vec::<Option<String>>::new()),
+			Series::new_empty("path".into(), &path_dtype).into(),
+			Series::new("size".into(), Vec::<u64>::new()).into(),
+			Series::new("modified".into(), Vec::<i64>::new()).into(), // Unix timestamp in nanoseconds
+			Series::new("file_type".into(), Vec::<String>::new()).into(),
+			Series::new("content_loaded".into(), Vec::<bool>::new()).into(),
+			Series::new("hashed".into(), Vec::<bool>::new()).into(),
+			Series::new("similarity_computed".into(), Vec::<bool>::new()).into(),
+			Series::new("scan_id".into(), Vec::<u32>::new()).into(),
+			Series::new("last_processed".into(), Vec::<i64>::new()).into(),
+			Series::new("blake3_hash".into(), Vec::<Option<String>>::new()).into(),
+			Series::new("perceptual_hash".into(), Vec::<Option<String>>::new()).into(),
+			Series::new("text_hash".into(), Vec::<Option<String>>::new()).into(),
 		])
 	}
 
@@ -192,7 +192,7 @@ impl ScanState {
 		// Deduplicate by path, keeping the last occurrence (most recent)
 		self.data = combined
 			.lazy()
-			.unique(Some(vec!["path".to_string()]), UniqueKeepStrategy::Last)
+			.unique(Some(cols(["path"])), UniqueKeepStrategy::Last)
 			.collect()?;
 
 		Ok(())
@@ -208,11 +208,26 @@ impl ScanState {
 				(i as u64, g as u64)
 			})
 			.unzip();
-		let path_series = StructChunked::new(
-			"path",
-			&[Series::new("idx", idxs), Series::new("gen", gens)],
-		)?
-		.into_series();
+		let fields = vec![
+			Field::new("idx".into(), DataType::UInt64),
+			Field::new("gen".into(), DataType::UInt64),
+		];
+		let values: Vec<AnyValue<'static>> = idxs
+			.into_iter()
+			.zip(gens)
+			.map(|(i, g)| {
+				AnyValue::StructOwned(Box::new((
+					vec![AnyValue::UInt64(i), AnyValue::UInt64(g)],
+					fields.clone(),
+				)))
+			})
+			.collect();
+		let path_series = Series::from_any_values_and_dtype(
+			"path".into(),
+			&values,
+			&DataType::Struct(fields.clone()),
+			true,
+		)?;
 
 		let sizes: Vec<u64> = files.iter().map(|f| f.size).collect();
 		let modified: Vec<i64> = files
@@ -235,18 +250,18 @@ impl ScanState {
 		let text_hash: Vec<Option<String>> = vec![None; files.len()];
 
 		DataFrame::new(vec![
-			path_series,
-			Series::new("size", sizes),
-			Series::new("modified", modified),
-			Series::new("file_type", file_types),
-			Series::new("content_loaded", content_loaded),
-			Series::new("hashed", hashed),
-			Series::new("similarity_computed", similarity_computed),
-			Series::new("scan_id", scan_ids),
-			Series::new("last_processed", last_processed),
-			Series::new("blake3_hash", blake3_hash),
-			Series::new("perceptual_hash", perceptual_hash),
-			Series::new("text_hash", text_hash),
+			path_series.into(),
+			Series::new("size".into(), sizes).into(),
+			Series::new("modified".into(), modified).into(),
+			Series::new("file_type".into(), file_types).into(),
+			Series::new("content_loaded".into(), content_loaded).into(),
+			Series::new("hashed".into(), hashed).into(),
+			Series::new("similarity_computed".into(), similarity_computed).into(),
+			Series::new("scan_id".into(), scan_ids).into(),
+			Series::new("last_processed".into(), last_processed).into(),
+			Series::new("blake3_hash".into(), blake3_hash).into(),
+			Series::new("perceptual_hash".into(), perceptual_hash).into(),
+			Series::new("text_hash".into(), text_hash).into(),
 		])
 	}
 
@@ -351,10 +366,13 @@ impl ScanState {
 
 		// Replace columns
 		self.data
-			.replace("blake3_hash", Series::new("blake3_hash", blake_series))
+			.replace(
+				"blake3_hash",
+				Series::new("blake3_hash".into(), blake_series),
+			)
 			.map_err(DetectorError::Polars)?;
 		self.data
-			.replace("hashed", Series::new("hashed", hashed_series))
+			.replace("hashed", Series::new("hashed".into(), hashed_series))
 			.map_err(DetectorError::Polars)?;
 		Ok(())
 	}
@@ -381,7 +399,7 @@ impl ScanState {
 			UnionArgs::default(),
 		)
 		.map_err(DetectorError::Polars)?
-		.unique(Some(vec!["path".to_string()]), UniqueKeepStrategy::First)
+		.unique(Some(cols(["path"])), UniqueKeepStrategy::First)
 		.collect()
 		.map_err(DetectorError::Polars)?;
 

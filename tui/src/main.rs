@@ -775,7 +775,7 @@ fn draw(
 	};
 
 	let paths_series = Series::new(
-		"Path",
+		"Path".into(),
 		pres.file_table
 			.iter()
 			.map(|(p, _, _, _)| {
@@ -789,28 +789,33 @@ fn draw(
 			.collect::<Vec<_>>(),
 	);
 	let size_series = Series::new(
-		"Size",
+		"Size".into(),
 		pres.file_table
 			.iter()
 			.map(|(_, s, _, _)| *s)
 			.collect::<Vec<_>>(),
 	);
 	let type_series = Series::new(
-		"Type",
+		"Type".into(),
 		pres.file_table
 			.iter()
 			.map(|(_, _, t, _)| t.clone())
 			.collect::<Vec<_>>(),
 	);
 	let hashed_series = Series::new(
-		"Hashed",
+		"Hashed".into(),
 		pres.file_table
 			.iter()
 			.map(|(_, _, _, h)| *h)
 			.collect::<Vec<_>>(),
 	);
-	let df = DataFrame::new(vec![paths_series, size_series, type_series, hashed_series])
-		.unwrap_or_else(|_| DataFrame::empty());
+	let df = DataFrame::new(vec![
+		paths_series.into(),
+		size_series.into(),
+		type_series.into(),
+		hashed_series.into(),
+	])
+	.unwrap_or_else(|_| DataFrame::empty());
 
 	// Compute concrete Path column width for tail-ellipsis.
 	// Note: table area has borders; subtract 2 from available width.

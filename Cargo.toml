@@ -20,7 +20,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs = "5"
 futures-lite = "2"
 async-channel = "2"
-polars = { version = "0.36.2", features = ["lazy", "temporal", "strings", "parquet", "ipc", "dtype-struct"] }
+polars = { version = "0.50.0", features = ["lazy", "temporal", "strings", "regex", "timezones", "parquet", "ipc", "dtype-struct"] }
 
 
 [dependencies]

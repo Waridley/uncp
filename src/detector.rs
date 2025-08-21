@@ -858,8 +858,8 @@ impl DuplicateDetector {
 
 		// Apply both masks in a single operation to avoid length mismatches
 		if keep_mask.iter().any(|&x| !x) || invalidate_mask.iter().any(|&x| x) {
-			let keep_series = Series::new("keep", keep_mask.clone());
-			let invalidate_series = Series::new("invalidate", invalidate_mask.clone());
+			let keep_series = Series::new("keep".into(), keep_mask.clone());
+			let invalidate_series = Series::new("invalidate".into(), invalidate_mask.clone());
 
 			self.state.data = self
 				.state
