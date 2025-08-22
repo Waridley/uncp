@@ -684,12 +684,12 @@ fn bench_polars_dataframes(c: &mut Criterion) {
 						.join(
 							join_df.clone().lazy(),
 							[
-								col("path").struct_().field_by_index(0), // idx component
-								col("path").struct_().field_by_index(1), // generation component
+								col("path").struct_().field_by_name("idx"),
+								col("path").struct_().field_by_name("gen"),
 							],
 							[
-								col("path").struct_().field_by_index(0), // idx component
-								col("path").struct_().field_by_index(1), // generation component
+								col("path").struct_().field_by_name("idx"),
+								col("path").struct_().field_by_name("gen"),
 							],
 							JoinArgs::new(JoinType::Inner),
 						)
