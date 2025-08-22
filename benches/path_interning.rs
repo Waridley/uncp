@@ -60,7 +60,7 @@ fn print_memory_comparison(size: usize) {
 fn generate_hash(rng: &mut StdRng, length: usize) -> String {
 	const CHARS: &[u8] = b"0123456789abcdef";
 	(0..length)
-		.map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char)
+		.map(|_| CHARS[rng.random_range(0..CHARS.len())] as char)
 		.collect()
 }
 
@@ -135,7 +135,7 @@ fn generate_diverse_paths(count: usize, pattern: PathPattern, seed: u64) -> Vec<
 				let mut path = PathBuf::from(base);
 
 				// Add random depth (5-15 additional levels)
-				let depth = rng.gen_range(5..=15);
+				let depth = rng.random_range(5..=15);
 				for level in 0..depth {
 					path = path.join(format!("level_{}", level));
 				}
