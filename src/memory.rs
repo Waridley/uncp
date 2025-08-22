@@ -237,13 +237,13 @@ impl std::fmt::Display for CacheStats {
 mod tests {
 	use super::*;
 
-	#[test]
+	#[test_log::test]
 	fn test_memory_manager_creation() {
 		let manager = MemoryManager::new();
 		assert!(manager.is_ok());
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_settings_from_sysinfo() {
 		let settings = Settings::from_sysinfo();
 		assert!(settings.is_ok());
@@ -257,14 +257,14 @@ mod tests {
 		assert!(settings.num_max_loaded_files >= 4); // At least 4 files
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_settings_custom() {
 		let settings = Settings::new(1024 * 1024, 10); // 1MB, 10 files
 		assert_eq!(settings.max_total_loaded_bytes, 1024 * 1024);
 		assert_eq!(settings.num_max_loaded_files, 10);
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_cache_stats_display() {
 		let stats = CacheStats {
 			current_files: 5,

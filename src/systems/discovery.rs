@@ -139,12 +139,16 @@ impl FileDiscoverySystem {
 		}
 
 		for entry in walker.into_iter() {
+			trace!("discovery: iter");
 			// Yield control periodically and check for cancellation
 			yield_periodically_with_cancellation(last_yield, context.yield_interval, context)
 				.await?;
 
 			let entry = match entry {
-				Ok(e) => e,
+				Ok(e) => {
+					trace!(path = %e.path().display(), "discovery: entry");
+					e
+				}
 				Err(e) => {
 					warn!("FileDiscovery walk error: {}", e);
 					continue;
@@ -165,7 +169,10 @@ impl FileDiscoverySystem {
 
 			// Get file metadata
 			let metadata = match entry.metadata() {
-				Ok(m) => m,
+				Ok(m) => {
+					trace!("discovery: metadata ok");
+					m
+				}
 				Err(e) => {
 					warn!("Skipping {} (metadata error: {})", path.display(), e);
 					continue;
@@ -362,6 +369,7 @@ impl System for FileDiscoverySystem {
 
 #[cfg(test)]
 mod tests {
+
 	use super::*;
 	use crate::data::ScanState;
 	use crate::memory::MemoryManager;
@@ -385,7 +393,7 @@ mod tests {
 		temp_dir
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_file_discovery_system_creation() {
 		let paths = vec![PathBuf::from("/test/path")];
 		let discovery = FileDiscoverySystem::new(paths.clone());
@@ -396,6 +404,7 @@ mod tests {
 		assert!(discovery.can_run(&ScanState::new().unwrap()));
 	}
 
+	#[test_log::test]
 	#[smol_potat::test]
 	async fn test_file_discovery_run() {
 		let temp_dir = create_test_directory();
@@ -418,7 +427,7 @@ mod tests {
 		assert!(df.column("file_type").is_ok());
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_system_interface() {
 		let discovery = FileDiscoverySystem::new(vec![PathBuf::from("/test")]);
 

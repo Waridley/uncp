@@ -197,7 +197,7 @@ mod tests {
 	use super::*;
 	use std::path::PathBuf;
 
-	#[test]
+	#[test_log::test]
 	fn test_detector_error_display() {
 		let error = DetectorError::Config("test config error".to_string());
 		assert_eq!(error.to_string(), "Configuration error: test config error");
@@ -221,7 +221,7 @@ mod tests {
 		);
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_cache_error_display() {
 		let error = CacheError::Corrupted {
 			path: PathBuf::from("/test/cache.dat"),
@@ -246,7 +246,7 @@ mod tests {
 		);
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_system_error_display() {
 		let error = SystemError::DependencyNotMet {
 			system: "hashing".to_string(),
@@ -276,7 +276,7 @@ mod tests {
 		);
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_error_conversion() {
 		// Test that std::io::Error converts to DetectorError
 		let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");

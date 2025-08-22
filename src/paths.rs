@@ -11,7 +11,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{LazyLock, RwLock};
-use tracing::{error, warn};
+use tracing::{error, trace, warn};
 
 type Arena = typed_generational_arena::Arena<PathSegment<'static>>;
 
@@ -21,14 +21,28 @@ pub struct DirEntryId(typed_generational_arena::Index<PathSegment<'static>, usiz
 static ARENA: LazyLock<RwLock<PathArena>> = LazyLock::new(|| RwLock::new(PathArena::new()));
 
 pub fn get_or_insert_segment(segment: Component<'_>, parent: Option<DirEntryId>) -> DirEntryId {
-	if let Some(idx) = ARENA.read().unwrap().get(segment, parent) {
-		return idx;
+	// First, try a read lock to see if the segment already exists.
+	{
+		let arena = ARENA.read().unwrap();
+		if let Some(idx) = arena.get(segment, parent) {
+			trace!("path_intern: hit existing segment");
+			return idx;
+		}
 	}
-	ARENA.write().unwrap().insert(segment, parent)
+	// Drop read lock before attempting to acquire a write lock.
+	let start = std::time::Instant::now();
+	let mut arena = ARENA.write().unwrap();
+	let idx = arena.insert(segment, parent);
+	trace!(
+		elapsed_ms = start.elapsed().as_millis() as u64,
+		"path_intern: inserted segment"
+	);
+	idx
 }
 
 pub fn intern_path(path: impl AsRef<Path>) -> DirEntryId {
 	let path = path.as_ref();
+	trace!(?path, "path_intern: start");
 	// Try to canonicalize, but fall back to the original path if it fails
 	// This allows interning of non-existent paths
 	let path = path
@@ -45,6 +59,7 @@ pub fn intern_path(path: impl AsRef<Path>) -> DirEntryId {
 		let idx = get_or_insert_segment(seg, parent);
 		Some(idx)
 	});
+	trace!(resolved = %path.display(), "path_intern: done");
 	last.expect("successfully inserted at least one segment")
 }
 
@@ -159,7 +174,15 @@ impl DirEntryId {
 	}
 
 	pub fn with_segment<U>(&self, f: impl FnOnce(&PathSegment<'_>) -> U) -> Option<U> {
+		let start = std::time::Instant::now();
 		let arena = ARENA.read().unwrap();
+		let waited = start.elapsed();
+		if waited.as_millis() > 10 {
+			trace!(
+				wait_ms = waited.as_millis() as u64,
+				"path_intern: acquired read lock after wait"
+			);
+		}
 		let segment = arena.segments.get(self.0)?;
 		Some(f(segment))
 	}
@@ -652,7 +675,7 @@ fn glob_match(text: &str, pattern: &str) -> bool {
 mod tests {
 	use super::*;
 
-	#[test]
+	#[test_log::test]
 	fn test_default_cache_dir() {
 		let cache_dir = default_cache_dir();
 
@@ -671,7 +694,7 @@ mod tests {
 		// which is acceptable behavior
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_cache_dir_structure() {
 		if let Some(cache_dir) = default_cache_dir() {
 			// The cache directory should be a subdirectory of the system cache dir
@@ -681,7 +704,7 @@ mod tests {
 		}
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_path_interning_and_display() {
 		// Test with a simple path
 		let _test_path = if cfg!(windows) {
@@ -706,7 +729,7 @@ mod tests {
 		let _ = std::fs::remove_file(&test_file);
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_path_interning_nonexistent() {
 		// Test that we can intern non-existent paths without panicking
 		let nonexistent = PathBuf::from("/this/path/does/not/exist");
@@ -717,7 +740,7 @@ mod tests {
 		assert!(!displayed.is_empty());
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_display_separators() {
 		// Create a test path with multiple segments
 		let temp_dir = std::env::temp_dir();
@@ -742,7 +765,7 @@ mod tests {
 		let _ = std::fs::remove_dir_all(temp_dir.join("test_nested"));
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_filtering_methods() {
 		// Create test paths
 		let test_paths = [
@@ -797,7 +820,7 @@ mod tests {
 		assert_eq!(archive_id.extension(), Some(OsString::from("gz")));
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_glob_matching() {
 		assert!(super::glob_match("hello.txt", "*.txt"));
 		assert!(super::glob_match("hello.txt", "hello.*"));
@@ -817,7 +840,7 @@ mod tests {
 		assert!(super::glob_match("hello", "*****"));
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_compiled_glob_matching() {
 		// Test the optimized compiled glob approach
 		let txt_glob = globset::Glob::new("*.txt").unwrap().compile_matcher();

@@ -208,6 +208,9 @@
 //! - **Configurable Limits**: User-defined memory limits with automatic enforcement
 //! - **Streaming Processing**: Large files processed in chunks to avoid memory spikes
 
+// test-log initializes tracing automatically for unit tests.
+// No manual tracing init needed here.
+
 // Core modules - fundamental data structures and processing
 
 /// Core data structures using Polars DataFrames for efficient file metadata storage.

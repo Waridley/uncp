@@ -498,7 +498,7 @@ mod tests {
 	use std::time::Duration;
 	use tempfile::TempDir;
 
-	#[test]
+	#[test_log::test]
 	fn test_engine_basic_lifecycle() {
 		smol::block_on(async {
 			let temp_dir = TempDir::new().unwrap();
@@ -570,7 +570,7 @@ mod tests {
 		});
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_background_engine_creation() {
 		smol::block_on(async {
 			let _temp_dir = tempfile::TempDir::new().unwrap();

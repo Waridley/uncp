@@ -901,7 +901,7 @@ mod tests {
 	use super::*;
 	use tempfile::TempDir;
 
-	#[test]
+	#[test_log::test]
 	fn test_detector_config_default() {
 		let config = DetectorConfig::default();
 		assert!(config.memory_settings.max_total_loaded_bytes > 0);
@@ -909,7 +909,7 @@ mod tests {
 		assert!(!config.disable_auto_cache); // Default should allow auto cache
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_detector_config_for_testing() {
 		let config = DetectorConfig::for_testing();
 		assert!(config.memory_settings.max_total_loaded_bytes > 0);
@@ -917,7 +917,7 @@ mod tests {
 		assert!(config.disable_auto_cache); // Test config should disable auto cache
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_detector_creation() {
 		let config = DetectorConfig::for_testing();
 		let detector = DuplicateDetector::new(config);
@@ -927,7 +927,7 @@ mod tests {
 		assert_eq!(detector.state.data.height(), 0);
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_detector_with_cache() {
 		// Test the basic detector creation without touching real cache
 		// We avoid calling new_with_cache() in tests since it tries to load from real cache
@@ -945,7 +945,7 @@ mod tests {
 		assert!(detector.config.disable_auto_cache);
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_detector_with_safe_cache_dir() {
 		// Test cache functionality using a temporary directory
 		let temp_dir = TempDir::new().unwrap();
@@ -962,7 +962,7 @@ mod tests {
 		assert_eq!(detector.state.data.height(), 0);
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_cache_operations() {
 		let temp_dir = TempDir::new().unwrap();
 		let cache_dir = temp_dir.path().join("cache");
@@ -983,7 +983,7 @@ mod tests {
 		assert!(loaded);
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_query_interface() {
 		let config = DetectorConfig::for_testing();
 		let detector = DuplicateDetector::new(config).unwrap();
@@ -993,7 +993,7 @@ mod tests {
 		// We don't test query functionality here as it's tested separately
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_clear_state() {
 		let config = DetectorConfig::for_testing();
 		let mut detector = DuplicateDetector::new(config).unwrap();

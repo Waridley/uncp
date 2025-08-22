@@ -300,6 +300,7 @@ impl CacheManager {
 
 #[cfg(test)]
 mod tests {
+
 	use super::*;
 	use crate::data::{FileKind, FileRecord};
 	use chrono::Utc;
@@ -326,7 +327,7 @@ mod tests {
 		state
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_cache_manager_creation() {
 		let temp_dir = TempDir::new().unwrap();
 		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
@@ -335,7 +336,7 @@ mod tests {
 		assert!(!cache_manager.cache_exists());
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_cache_paths() {
 		let temp_dir = TempDir::new().unwrap();
 		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
@@ -355,7 +356,7 @@ mod tests {
 		);
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_ensure_dir() {
 		let temp_dir = TempDir::new().unwrap();
 		let cache_dir = temp_dir.path().join("cache");
@@ -374,7 +375,7 @@ mod tests {
 		assert!(result.is_ok());
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_save_and_load_all() {
 		let temp_dir = TempDir::new().unwrap();
 		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
@@ -403,7 +404,7 @@ mod tests {
 		assert_eq!(loaded_state.data.height(), state.data.height());
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_load_nonexistent_cache() {
 		let temp_dir = TempDir::new().unwrap();
 		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
@@ -415,7 +416,7 @@ mod tests {
 		assert!(loaded.is_none());
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_scan_metadata_serialization() {
 		let metadata = ScanMetadata {
 			version: 1,
@@ -433,7 +434,7 @@ mod tests {
 		assert_eq!(deserialized.file_count, metadata.file_count);
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_cache_exists_partial() {
 		let temp_dir = TempDir::new().unwrap();
 		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
@@ -451,7 +452,7 @@ mod tests {
 		assert!(cache_manager.cache_exists()); // Now true
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_save_with_hashes() {
 		let temp_dir = TempDir::new().unwrap();
 		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
@@ -476,7 +477,7 @@ mod tests {
 		assert!(hash_str.contains("abc123"));
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_atomic_operations() {
 		let temp_dir = TempDir::new().unwrap();
 		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
@@ -498,7 +499,7 @@ mod tests {
 		}
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_metadata_timestamp() {
 		let temp_dir = TempDir::new().unwrap();
 		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());
@@ -519,7 +520,7 @@ mod tests {
 		assert!(meta.last_scan_time <= after_save);
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_cache_merging() {
 		let temp_dir = TempDir::new().unwrap();
 		let cache_manager = CacheManager::new(temp_dir.path().to_path_buf());

@@ -423,7 +423,7 @@ impl RelationKey for SimilarityGroups {
 mod tests {
 	use super::*;
 
-	#[test]
+	#[test_log::test]
 	fn test_type_safe_relation_storage() {
 		let mut store = RelationStore::new();
 
@@ -473,7 +473,7 @@ mod tests {
 		assert!(store.get_metadata::<SameFileName>().is_none());
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_multiple_relation_types() {
 		let mut store = RelationStore::new();
 
@@ -527,7 +527,7 @@ mod tests {
 		assert_eq!(store.all_metadata().count(), 2);
 	}
 
-	#[test]
+	#[test_log::test]
 	fn test_relation_merge() {
 		let mut store1 = RelationStore::new();
 		let mut store2 = RelationStore::new();
