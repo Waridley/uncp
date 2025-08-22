@@ -101,22 +101,28 @@ impl std::fmt::Display for FileKind {
 /// ## Usage Patterns
 ///
 /// ```rust
-/// use uncp::data::ScanState;
+/// use uncp::data::{ScanState, RelationStore};
+/// use chrono::Utc;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// // Create new scan state
 /// let mut scan_state = ScanState::new()?;
 ///
 /// // Add files from discovery
-/// let file_paths = vec!["/path/to/file1.txt", "/path/to/file2.jpg"];
-/// scan_state.add_files(&file_paths).await?;
+/// let file_records = vec![
+///     uncp::data::FileRecord { path: "/path/to/file1.txt".into(), size: 123, modified: Utc::now(), file_type: uncp::data::FileKind::Text },
+///     uncp::data::FileRecord { path: "/path/to/file2.jpg".into(), size: 456, modified: Utc::now(), file_type: uncp::data::FileKind::Image },
+/// ];
+/// scan_state.add_files(file_records)?;
 ///
-/// // Query for specific file types
-/// let text_files = scan_state.files_by_type("text")?;
+/// // Query for specific file types via Query API
+/// let relations = RelationStore::new();
+/// let query = uncp::query::Query::new(&scan_state, &relations);
+/// let text_files = query.files_by_type("text")?;
 /// println!("Found {} text files", text_files.height());
 ///
-/// // Get files that need hashing
-/// let unhashed = scan_state.files_needing_hash()?;
+/// // Get files that need hashing via Query API
+/// let unhashed = query.files_needing_hashing()?;
 /// println!("{} files need content hashing", unhashed.height());
 /// # Ok(())
 /// # }

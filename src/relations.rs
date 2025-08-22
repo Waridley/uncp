@@ -38,9 +38,9 @@ use crate::error::{DetectorError, DetectorResult};
 ///     
 ///     fn create_schema() -> PolarsResult<DataFrame> {
 ///         DataFrame::new(vec![
-///             Series::new("hash_value", Vec::<String>::new()),
-///             Series::new("file_paths", Vec::<Vec<String>>::new()),
-///             Series::new("file_count", Vec::<u32>::new()),
+///             Series::new("hash_value".into(), Vec::<String>::new()).into(),
+///             Series::new("file_paths".into(), ListChunked::full_null_with_dtype("file_paths".into(), 0, &DataType::String).into_series()).into(),
+///             Series::new("file_count".into(), Vec::<u32>::new()).into(),
 ///         ])
 ///     }
 /// }
@@ -127,8 +127,8 @@ impl RelationMetadata {
 ///     fn description() -> &'static str { "Files with identical content hashes" }
 ///     fn create_schema() -> PolarsResult<DataFrame> {
 ///         DataFrame::new(vec![
-///             Series::new("hash", Vec::<String>::new()),
-///             Series::new("paths", Vec::<Vec<String>>::new()),
+///             Series::new("hash".into(), Vec::<String>::new()).into(),
+///             Series::new("paths".into(), ListChunked::full_null_with_dtype("paths".into(), 0, &DataType::String).into_series()).into(),
 ///         ])
 ///     }
 /// }
@@ -139,8 +139,8 @@ impl RelationMetadata {
 ///     fn description() -> &'static str { "Files with identical names" }
 ///     fn create_schema() -> PolarsResult<DataFrame> {
 ///         DataFrame::new(vec![
-///             Series::new("filename", Vec::<String>::new()),
-///             Series::new("paths", Vec::<Vec<String>>::new()),
+///             Series::new("filename".into(), Vec::<String>::new()).into(),
+///             Series::new("paths".into(), ListChunked::full_null_with_dtype("paths".into(), 0, &DataType::String).into_series()).into(),
 ///         ])
 ///     }
 /// }
@@ -150,8 +150,9 @@ impl RelationMetadata {
 ///
 /// // Insert relations with type-safe keys
 /// let hash_data = DataFrame::new(vec![
-///     Series::new("hash", vec!["abc123"]),
-///     Series::new("paths", vec![vec!["file1.txt", "file2.txt"]]),
+///     Series::new("hash".into(), vec!["abc123"]).into(),
+///     Series::new("paths".into(), vec![Series::new("".into(), vec!["file1.txt", "file2.txt"])])
+///         .into(),
 /// ])?;
 /// store.insert::<IdenticalHashes>(hash_data)?;
 ///

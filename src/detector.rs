@@ -57,13 +57,13 @@ use tracing::info;
 /// )?;
 ///
 /// // Exclude system directories
-/// filter.add_exclude("**/node_modules/**")?;
-/// filter.add_exclude("**/.git/**")?;
-/// filter.add_exclude("**/target/**")?;
+/// filter.add_exclude_pattern("**/node_modules/**".to_string())?;
+/// filter.add_exclude_pattern("**/.git/**".to_string())?;
+/// filter.add_exclude_pattern("**/target/**".to_string())?;
 ///
 /// // Test if a file should be included
-/// assert!(filter.should_include("/photos/vacation.jpg")?);
-/// assert!(!filter.should_include("/project/node_modules/lib.js")?);
+/// assert!(filter.should_include("/photos/vacation.jpg"));
+/// assert!(!filter.should_include("/project/node_modules/lib.js"));
 /// # Ok(())
 /// # }
 /// ```
@@ -247,9 +247,8 @@ impl PathFilter {
 ///
 /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let mut config = DetectorConfig::default();
-/// config.memory_settings = Settings::default()
-///     .with_memory_limit_mb(4096)  // 4GB limit
-///     .with_max_threads(12);       // 12 processing threads
+/// // Set custom memory settings: 4GB total load cap, allow up to 12 files cached
+/// config.memory_settings = Settings::new(4 * 1024 * 1024 * 1024, 12);
 /// config.disable_auto_cache = true;  // Disable caching for testing
 /// # Ok(())
 /// # }
@@ -363,15 +362,15 @@ impl DetectorConfig {
 /// let mut detector = DuplicateDetector::new(DetectorConfig::default())?;
 ///
 /// // Scan a directory
-/// detector.scan_directory("./photos").await?;
+/// detector.scan_directory("./photos".into()).await?;
 ///
-/// // Hash files for duplicate detection
-/// detector.hash_files().await?;
+/// // Process until complete (includes hashing)
+/// detector.process_until_complete().await?;
 ///
-/// // Query for duplicates
+/// // Query for files needing hashing
 /// let query = detector.query();
-/// let duplicates = query.duplicate_groups()?;
-/// println!("Found {} duplicate groups", duplicates.len());
+/// let pending = query.files_needing_hashing()?;
+/// println!("{} files need hashing", pending.height());
 /// # Ok(())
 /// # }
 /// ```
@@ -384,14 +383,16 @@ impl DetectorConfig {
 /// let mut detector = DuplicateDetector::new(DetectorConfig::default())?;
 ///
 /// // Scan with progress callbacks
-/// detector.scan_directory_with_progress("./data", |progress| {
-///     println!("Discovered {} files", progress.files_found);
-/// }).await?;
+/// detector.scan_with_progress("./data".into(), std::sync::Arc::new(|progress| {
+///     println!("Discovered {} files", progress.processed_items);
+/// }))
+/// .await?;
 ///
-/// // Hash with progress callbacks
-/// detector.hash_files_with_progress(|progress| {
-///     println!("Hashed {}/{} files", progress.completed, progress.total);
-/// }).await?;
+/// // Continue processing until complete with progress callbacks
+/// detector.process_until_complete_with_progress(None, std::sync::Arc::new(|progress| {
+///     println!("{}: {}/{}", progress.system_name, progress.processed_items, progress.total_items);
+/// }))
+/// .await?;
 /// # Ok(())
 /// # }
 /// ```

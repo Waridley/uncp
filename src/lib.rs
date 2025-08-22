@@ -32,10 +32,10 @@
 //! let mut detector = DuplicateDetector::new(DetectorConfig::default())?;
 //!
 //! // Scan a directory for files
-//! detector.scan_directory("./test_data").await?;
+//! detector.scan_directory("./test_data".into()).await?;
 //!
-//! // Hash files for content-based duplicate detection
-//! detector.hash_files().await?;
+//! // Process until complete (includes hashing)
+//! detector.process_until_complete().await?;
 //!
 //! // Query results
 //! let query = detector.query();
@@ -55,40 +55,40 @@
 //!
 //! # async fn advanced_example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Configure memory limits and processing options
-//! let config = DetectorConfig::default()
-//!     .with_memory_limit_mb(2048)  // 2GB memory limit
-//!     .with_max_threads(8);        // 8 processing threads
+//! let config = DetectorConfig::default();
 //!
 //! let mut detector = DuplicateDetector::new(config)?;
 //!
 //! // Set up path filters to exclude certain files
-//! let filter = PathFilter::new()
-//!     .include("**/*.{jpg,png,mp4}")  // Only media files
-//!     .exclude("**/node_modules/**")  // Exclude dependencies
-//!     .exclude("**/.git/**");         // Exclude version control
+//! let filter = PathFilter::new(vec!["**/*.{jpg,png,mp4}".to_string()], vec![
+//!     "**/node_modules/**".to_string(),
+//!     "**/.git/**".to_string(),
+//! ])?;
 //!
-//! detector.set_path_filter(filter);
+//! detector.config.path_filter = filter;
 //!
 //! // Scan with progress reporting
-//! detector.scan_directory_with_progress("./media", |progress| {
-//!     println!("Discovered {} files", progress.files_found);
-//! }).await?;
+//! detector
+//!     .scan_with_progress("./media".into(), std::sync::Arc::new(|progress| {
+//!         println!(
+//!             "{}: {}/{}",
+//!             progress.system_name, progress.processed_items, progress.total_items
+//!         );
+//!     }))
+//!     .await?;
 //!
-//! // Hash with progress reporting
-//! detector.hash_files_with_progress(|progress| {
-//!     println!("Hashed {}/{} files", progress.completed, progress.total);
-//! }).await?;
-//!
-//! // Find duplicate groups
-//! let query = detector.query();
-//! let duplicates = query.duplicate_groups()?;
-//!
-//! for group in duplicates.iter() {
-//!     println!("Duplicate group with {} files:", group.len());
-//!     for file in group {
-//!         println!("  {}", file.path);
-//!     }
-//! }
+//! // Continue processing until complete
+//! detector
+//!     .process_until_complete_with_progress(
+//!         None,
+//!         std::sync::Arc::new(|progress| {
+//!             println!(
+//!                 "{}: {}/{}",
+//!                 progress.system_name, progress.processed_items, progress.total_items
+//!             );
+//!         }),
+//!     )
+//!     .await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -96,42 +96,21 @@
 //! ### Background Processing with Engine
 //!
 //! ```rust
-//! use uncp::{engine::{BackgroundEngine, EngineCommand, EngineMode}, DetectorConfig};
+//! use uncp::{engine::{BackgroundEngine, EngineCommand, EngineMode}, DetectorConfig, DuplicateDetector};
 //! use std::path::PathBuf;
 //!
 //! # async fn engine_example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create background engine for async processing
-//! let (engine, mut progress_rx, command_tx) = BackgroundEngine::new(
-//!     DetectorConfig::default(),
-//!     EngineMode::Interactive
-//! )?;
-//!
-//! // Start the engine in background
-//! let engine_handle = smol::spawn(engine.run());
+//! let detector = DuplicateDetector::new(DetectorConfig::default())?;
+//! let (_engine, mut events, command_tx) =
+//!     BackgroundEngine::start_with_mode(detector, EngineMode::Interactive);
 //!
 //! // Send commands to control processing
 //! command_tx.send(EngineCommand::SetPath(PathBuf::from("./data"))).await?;
 //! command_tx.send(EngineCommand::Start).await?;
 //!
-//! // Monitor progress
-//! while let Ok(progress) = progress_rx.recv().await {
-//!     match progress {
-//!         EngineProgress::Discovery { files_found, current_path } => {
-//!             println!("Found {} files, currently scanning: {}", files_found, current_path);
-//!         }
-//!         EngineProgress::Hashing { completed, total, current_file } => {
-//!             println!("Hashing progress: {}/{} - {}", completed, total, current_file);
-//!         }
-//!         EngineProgress::Complete => {
-//!             println!("Processing complete!");
-//!             break;
-//!         }
-//!     }
-//! }
-//!
 //! // Stop the engine
 //! command_tx.send(EngineCommand::Stop).await?;
-//! engine_handle.await?;
 //! # Ok(())
 //! # }
 //! ```

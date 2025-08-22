@@ -50,11 +50,12 @@ use thiserror::Error;
 ///
 /// ```rust
 /// use uncp::{DetectorError, DuplicateDetector, DetectorConfig};
+/// use std::path::PathBuf;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let mut detector = DuplicateDetector::new(DetectorConfig::default())?;
 ///
-/// match detector.scan_directory("./data").await {
+/// match detector.scan_directory(PathBuf::from("./data")).await {
 ///     Ok(_) => println!("Scan completed successfully"),
 ///     Err(DetectorError::Io(io_err)) => {
 ///         eprintln!("I/O error during scan: {}", io_err);

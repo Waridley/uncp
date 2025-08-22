@@ -71,8 +71,8 @@ use crate::data::{RelationStore, ScanState};
 /// println!("{} files need content hashing", unhashed.height());
 ///
 /// // Find large files (>100MB)
-/// let large_files = query.files_larger_than(100 * 1024 * 1024)?;
-/// println!("Found {} large files", large_files.height());
+/// // let large_files = query.files_larger_than(100 * 1024 * 1024)?;
+/// // println!("Found {} large files", large_files.height());
 /// # Ok(())
 /// # }
 /// ```
@@ -86,17 +86,8 @@ use crate::data::{RelationStore, ScanState};
 /// let query = detector.query();
 ///
 /// // Find all duplicate groups
-/// let duplicates = query.duplicate_groups()?;
-/// for group in duplicates.iter() {
-///     println!("Duplicate group with {} files:", group.len());
-///     for file in group {
-///         println!("  {}", file.path);
-///     }
-/// }
-///
-/// // Find the largest duplicate groups
-/// let largest = query.largest_duplicate_groups(10)?;
-/// println!("Top 10 largest duplicate groups found");
+/// // For now, duplicate analysis is not implemented in Query.
+/// // This section is intentionally left as a placeholder for future work.
 /// # Ok(())
 /// # }
 /// ```

@@ -278,7 +278,10 @@ impl DirEntryId {
 	/// // Compile once, use many times
 	/// let txt_matcher = Glob::new("*.txt").unwrap().compile_matcher();
 	///
-	/// for path_id in many_paths {
+	/// for path_id in [
+	///     uncp::paths::intern_path("/home/user/file1.txt"),
+	///     uncp::paths::intern_path("/home/user/file2.jpg"),
+	/// ] {
 	///     if path_id.name_matches_compiled_glob(&txt_matcher) {
 	///         // Process .txt files
 	///     }

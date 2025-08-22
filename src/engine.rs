@@ -36,17 +36,13 @@ use crate::{DuplicateDetector, paths::default_cache_dir};
 ///
 /// ```rust
 /// use uncp::engine::{BackgroundEngine, EngineCommand, EngineMode};
-/// use uncp::DetectorConfig;
+/// use uncp::{DuplicateDetector, DetectorConfig};
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// // Create engine with command channel
-/// let (engine, mut events, commands) = BackgroundEngine::new(
-///     DetectorConfig::default(),
-///     EngineMode::Interactive
-/// )?;
-///
-/// // Start background processing
-/// let engine_task = smol::spawn(engine.run());
+/// // Create detector and start engine (engine thread starts internally)
+/// let detector = DuplicateDetector::new(DetectorConfig::default())?;
+/// let (_engine, mut events, commands) =
+///     BackgroundEngine::start_with_mode(detector, EngineMode::Interactive);
 ///
 /// // Send commands to control processing
 /// commands.send(EngineCommand::SetPath("/data/photos".into())).await?;
@@ -58,7 +54,6 @@ use crate::{DuplicateDetector, paths::default_cache_dir};
 ///
 /// // Clean shutdown
 /// commands.send(EngineCommand::Stop).await?;
-/// engine_task.await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -154,35 +149,27 @@ pub struct BackgroundEngine {
 /// ### CLI Application
 /// ```rust
 /// use uncp::engine::{BackgroundEngine, EngineMode};
-/// use uncp::DetectorConfig;
+/// use uncp::{DuplicateDetector, DetectorConfig};
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// // CLI mode for batch processing
-/// let (engine, mut events, commands) = BackgroundEngine::new(
-///     DetectorConfig::default(),
-///     EngineMode::Cli
-/// )?;
-///
-/// // Engine will automatically exit after completing work
-/// let result = engine.run().await;
+/// let detector = DuplicateDetector::new(DetectorConfig::default())?;
+/// let (_engine, _events, _commands) =
+///     BackgroundEngine::start_with_mode(detector, EngineMode::Cli);
 /// # Ok(())
 /// # }
 /// ```
 ///
 /// ### Interactive Application (TUI/GUI)
 /// ```rust
-/// use uncp::engine::{BackgroundEngine, EngineMode};
-/// use uncp::DetectorConfig;
+/// use uncp::engine::{BackgroundEngine, EngineMode, EngineCommand};
+/// use uncp::{DuplicateDetector, DetectorConfig};
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// // Interactive mode for ongoing user interaction
-/// let (engine, mut events, commands) = BackgroundEngine::new(
-///     DetectorConfig::default(),
-///     EngineMode::Interactive
-/// )?;
-///
-/// // Engine continues running until explicitly stopped
-/// let engine_task = smol::spawn(engine.run());
+/// let detector = DuplicateDetector::new(DetectorConfig::default())?;
+/// let (_engine, _events, commands) =
+///     BackgroundEngine::start_with_mode(detector, EngineMode::Interactive);
 ///
 /// // Handle user interactions...
 /// // commands.send(EngineCommand::Pause).await?;
@@ -190,7 +177,6 @@ pub struct BackgroundEngine {
 ///
 /// // Explicit shutdown required
 /// commands.send(EngineCommand::Stop).await?;
-/// engine_task.await?;
 /// # Ok(())
 /// # }
 /// ```
