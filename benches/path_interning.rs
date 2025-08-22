@@ -821,7 +821,11 @@ fn bench_path_operations(c: &mut Criterion) {
 				b.iter(|| {
 					let mut found = 0;
 					for s in strings {
-						if s.starts_with("/home/") || s.starts_with("/var/") {
+						if cfg!(windows) {
+							if s.contains("\\Users\\") || s.contains("\\Windows\\") {
+								found += 1;
+							}
+						} else if s.starts_with("/home/") || s.starts_with("/var/") {
 							found += 1;
 						}
 					}
@@ -837,7 +841,13 @@ fn bench_path_operations(c: &mut Criterion) {
 				b.iter(|| {
 					let mut found = 0;
 					for id in interned {
-						if id.is_descendant_of_path("/home/") || id.is_descendant_of_path("/var/") {
+						if cfg!(windows) {
+							if id.path_contains("\\Users\\") || id.path_contains("\\Windows\\") {
+								found += 1;
+							}
+						} else if id.is_descendant_of_path("/home/")
+							|| id.is_descendant_of_path("/var/")
+						{
 							found += 1;
 						}
 					}
@@ -852,17 +862,16 @@ fn bench_path_operations(c: &mut Criterion) {
 			|b, interned| {
 				b.iter(|| {
 					let mut found = 0;
+					// Resolve target prefixes safely across platforms
+					let home_target: PathBuf = Path::new("/home/")
+						.canonicalize()
+						.unwrap_or_else(|_| PathBuf::from("/home/"));
+					let var_target: PathBuf = Path::new("/var/")
+						.canonicalize()
+						.unwrap_or_else(|_| PathBuf::from("/var/"));
 					for id in interned {
 						let p = id.resolve();
-						if p.starts_with(
-							<str as AsRef<Path>>::as_ref("/home/")
-								.canonicalize()
-								.unwrap(),
-						) || p.starts_with(
-							<str as AsRef<Path>>::as_ref("/var/")
-								.canonicalize()
-								.unwrap(),
-						) {
+						if p.starts_with(&home_target) || p.starts_with(&var_target) {
 							found += 1;
 						}
 					}
@@ -878,8 +887,15 @@ fn bench_path_operations(c: &mut Criterion) {
 				b.iter(|| {
 					let mut found = 0;
 					for s in strings {
-						let s = std::path::absolute(PathBuf::from(s)).unwrap();
-						if s.starts_with("/home/") || s.starts_with("/var/") {
+						let s = std::path::absolute(PathBuf::from(s))
+							.unwrap_or_else(|_| PathBuf::from(s));
+						if cfg!(windows) {
+							if s.to_string_lossy().contains("\\Users\\")
+								|| s.to_string_lossy().contains("\\Windows\\")
+							{
+								found += 1;
+							}
+						} else if s.starts_with("/home/") || s.starts_with("/var/") {
 							found += 1;
 						}
 					}
@@ -888,8 +904,11 @@ fn bench_path_operations(c: &mut Criterion) {
 			},
 		);
 
-		let home = intern_path("/home/");
-		let var = intern_path("/var/");
+		let (home, var) = if cfg!(windows) {
+			(intern_path("C:/Users/"), intern_path("C:/Windows/"))
+		} else {
+			(intern_path("/home/"), intern_path("/var/"))
+		};
 		group.bench_with_input(
 			BenchmarkId::new("interned_descendant_of", size),
 			&interned,

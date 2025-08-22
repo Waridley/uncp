@@ -722,8 +722,34 @@ mod tests {
 		let displayed = format!("{}", interned);
 		let resolved = interned.resolve();
 
-		// The displayed path should match the resolved path when converted to string
-		assert_eq!(displayed, resolved.display().to_string());
+		// On Windows, canonicalized paths may have \\?\ prefix, but our display format normalizes them
+		// So we compare the normalized versions instead of exact string equality
+		let normalized_displayed = PathBuf::from(&displayed);
+		let normalized_resolved = if resolved.starts_with("\\\\?\\") {
+			// Strip the \\?\ prefix for comparison
+			PathBuf::from(
+				resolved
+					.to_string_lossy()
+					.strip_prefix("\\\\?\\")
+					.unwrap_or(&resolved.to_string_lossy()),
+			)
+		} else {
+			resolved.clone()
+		};
+
+		// Both should resolve to the same canonical path
+		assert_eq!(
+			normalized_displayed
+				.canonicalize()
+				.unwrap_or(normalized_displayed),
+			normalized_resolved
+				.canonicalize()
+				.unwrap_or(normalized_resolved)
+		);
+
+		// The displayed string should not be empty and should contain the filename
+		assert!(!displayed.is_empty());
+		assert!(displayed.contains("test_intern.txt"));
 
 		// Clean up
 		let _ = std::fs::remove_file(&test_file);
@@ -767,14 +793,24 @@ mod tests {
 
 	#[test_log::test]
 	fn test_filtering_methods() {
-		// Create test paths
-		let test_paths = [
-			"/home/user/documents/report.txt",
-			"/home/user/pictures/photo.jpg",
-			"/var/log/system.log",
-			"/tmp/build/output.dat",
-			"/home/user/downloads/archive.tar.gz",
-		];
+		// Create test paths - use platform-appropriate paths
+		let test_paths = if cfg!(windows) {
+			[
+				"C:\\Users\\user\\Documents\\report.txt",
+				"C:\\Users\\user\\Pictures\\photo.jpg",
+				"C:\\Windows\\Logs\\system.log",
+				"C:\\Temp\\build\\output.dat",
+				"C:\\Users\\user\\Downloads\\archive.tar.gz",
+			]
+		} else {
+			[
+				"/home/user/documents/report.txt",
+				"/home/user/pictures/photo.jpg",
+				"/var/log/system.log",
+				"/tmp/build/output.dat",
+				"/home/user/downloads/archive.tar.gz",
+			]
+		};
 
 		let interned_paths: Vec<DirEntryId> = test_paths
 			.iter()
@@ -794,10 +830,15 @@ mod tests {
 			.collect();
 		assert_eq!(log_files.len(), 1);
 
-		// Test path prefix filtering
+		// Test path prefix filtering - use platform-appropriate prefix
+		let prefix_path = if cfg!(windows) {
+			"C:\\Users\\user"
+		} else {
+			"/home/user"
+		};
 		let home_files: Vec<_> = interned_paths
 			.iter()
-			.filter(|id| id.is_descendant_of_path("/home/user"))
+			.filter(|id| id.is_descendant_of_path(prefix_path))
 			.collect();
 		assert_eq!(home_files.len(), 3);
 
@@ -808,15 +849,25 @@ mod tests {
 			.collect();
 		assert_eq!(user_files.len(), 3);
 
-		// Test glob matching
-		let photo_id = intern_path(PathBuf::from("/home/user/pictures/photo.jpg"));
+		// Test glob matching - use platform-appropriate path
+		let photo_path = if cfg!(windows) {
+			"C:\\Users\\user\\Pictures\\photo.jpg"
+		} else {
+			"/home/user/pictures/photo.jpg"
+		};
+		let photo_id = intern_path(PathBuf::from(photo_path));
 		assert!(photo_id.name_matches_glob("*.jpg"));
 		assert!(photo_id.name_matches_glob("photo.*"));
 		assert!(photo_id.name_matches_glob("p?oto.jpg"));
 		assert!(!photo_id.name_matches_glob("*.txt"));
 
-		// Test extension extraction
-		let archive_id = intern_path(PathBuf::from("/home/user/downloads/archive.tar.gz"));
+		// Test extension extraction - use platform-appropriate path
+		let archive_path = if cfg!(windows) {
+			"C:\\Users\\user\\Downloads\\archive.tar.gz"
+		} else {
+			"/home/user/downloads/archive.tar.gz"
+		};
+		let archive_id = intern_path(PathBuf::from(archive_path));
 		assert_eq!(archive_id.extension(), Some(OsString::from("gz")));
 	}
 

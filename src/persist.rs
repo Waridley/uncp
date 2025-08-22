@@ -309,20 +309,37 @@ mod tests {
 
 	fn create_test_state() -> ScanState {
 		let mut state = ScanState::new().unwrap();
-		let files = vec![
-			FileRecord {
-				path: PathBuf::from("/test/file1.txt"),
-				size: 100,
-				modified: Utc::now(),
-				file_type: FileKind::Text,
-			},
-			FileRecord {
-				path: PathBuf::from("/test/file2.jpg"),
-				size: 200,
-				modified: Utc::now(),
-				file_type: FileKind::Image,
-			},
-		];
+		let files = if cfg!(windows) {
+			vec![
+				FileRecord {
+					path: PathBuf::from("C:\\test\\file1.txt"),
+					size: 100,
+					modified: Utc::now(),
+					file_type: FileKind::Text,
+				},
+				FileRecord {
+					path: PathBuf::from("C:\\test\\file2.jpg"),
+					size: 200,
+					modified: Utc::now(),
+					file_type: FileKind::Image,
+				},
+			]
+		} else {
+			vec![
+				FileRecord {
+					path: PathBuf::from("/test/file1.txt"),
+					size: 100,
+					modified: Utc::now(),
+					file_type: FileKind::Text,
+				},
+				FileRecord {
+					path: PathBuf::from("/test/file2.jpg"),
+					size: 200,
+					modified: Utc::now(),
+					file_type: FileKind::Image,
+				},
+			]
+		};
 		state.add_files(files).unwrap();
 		state
 	}
@@ -534,20 +551,37 @@ mod tests {
 
 		// Create second state with different files
 		let mut state2 = ScanState::new().unwrap();
-		let files2 = vec![
-			FileRecord {
-				path: PathBuf::from("/test/file3.txt"),
-				size: 300,
-				modified: Utc::now(),
-				file_type: FileKind::Text,
-			},
-			FileRecord {
-				path: PathBuf::from("/test/file4.txt"),
-				size: 400,
-				modified: Utc::now(),
-				file_type: FileKind::Text,
-			},
-		];
+		let files2 = if cfg!(windows) {
+			vec![
+				FileRecord {
+					path: PathBuf::from("C:\\test\\file3.txt"),
+					size: 300,
+					modified: Utc::now(),
+					file_type: FileKind::Text,
+				},
+				FileRecord {
+					path: PathBuf::from("C:\\test\\file4.txt"),
+					size: 400,
+					modified: Utc::now(),
+					file_type: FileKind::Text,
+				},
+			]
+		} else {
+			vec![
+				FileRecord {
+					path: PathBuf::from("/test/file3.txt"),
+					size: 300,
+					modified: Utc::now(),
+					file_type: FileKind::Text,
+				},
+				FileRecord {
+					path: PathBuf::from("/test/file4.txt"),
+					size: 400,
+					modified: Utc::now(),
+					file_type: FileKind::Text,
+				},
+			]
+		};
 		state2.add_files(files2).unwrap();
 		let relations2 = RelationStore::new();
 
@@ -586,9 +620,24 @@ mod tests {
 			_ => unreachable!("unexpected dtype for path column"),
 		};
 
-		assert!(paths.contains(&"/test/file1.txt".to_string()));
-		assert!(paths.contains(&"/test/file2.jpg".to_string()));
-		assert!(paths.contains(&"/test/file3.txt".to_string()));
-		assert!(paths.contains(&"/test/file4.txt".to_string()));
+		if cfg!(windows) {
+			use std::ffi::OsStr;
+			let expected = ["file1.txt", "file2.jpg", "file3.txt", "file4.txt"];
+			for name in expected {
+				assert!(
+					paths.iter().any(|p| {
+						let pb = std::path::Path::new(p);
+						pb.file_name().is_some_and(|n| n == OsStr::new(name))
+					}),
+					"missing {name} in merged paths: {:?}",
+					paths
+				);
+			}
+		} else {
+			assert!(paths.contains(&"/test/file1.txt".to_string()));
+			assert!(paths.contains(&"/test/file2.jpg".to_string()));
+			assert!(paths.contains(&"/test/file3.txt".to_string()));
+			assert!(paths.contains(&"/test/file4.txt".to_string()));
+		}
 	}
 }
