@@ -23,6 +23,7 @@ use polars::prelude::*;
 use tracing::{debug, info};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use uncp::engine::{BackgroundEngine, EngineCommand, EngineEvent};
+use uncp::log_ui::UiErrorLayer;
 use uncp::ui::PresentationState;
 
 mod df_render;
@@ -40,9 +41,11 @@ fn main() -> std::io::Result<()> {
 
 	// Tracing subscriber -> write to file (non-blocking), not the terminal
 	let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+	let (ui_layer, ui_err_handle) = UiErrorLayer::new(200);
 	tracing_subscriber::registry()
 		.with(fmt::layer().with_writer(nb))
 		.with(env_filter)
+		.with(ui_layer)
 		.init();
 	// Tip: set RUST_LOG=uncp_tui=debug,uncp=info to change verbosity
 
@@ -85,7 +88,7 @@ fn main() -> std::io::Result<()> {
 		let _ = execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
 
 		let mut terminal = ratatui::init();
-		let _ = run(&ex, &mut terminal);
+		let _ = run(&ex, &mut terminal, &ui_err_handle);
 
 		// Disable mouse support on exit
 		let _ = execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
@@ -122,6 +125,7 @@ fn main() -> std::io::Result<()> {
 fn run(
 	_ex: &std::sync::Arc<Executor<'_>>,
 	terminal: &mut ratatui::DefaultTerminal,
+	ui_errs: &uncp::log_ui::UiErrorQueueHandle,
 ) -> std::io::Result<()> {
 	// UI state
 	let mut current_path = PathBuf::from(".");
@@ -668,6 +672,7 @@ fn run(
 				&current_hashing_progress,
 				processing_speed,
 				&mut table_state,
+				ui_errs,
 			)
 		})?;
 	}
@@ -718,6 +723,7 @@ fn draw(
 	hashing_progress: &Option<uncp::systems::SystemProgress>,
 	processing_speed: Option<f64>,
 	table_state: &mut TableState,
+	ui_errs: &uncp::log_ui::UiErrorQueueHandle,
 ) {
 	let in_input = in_path_input || in_filter_input;
 	let chunks = Layout::default()
@@ -725,7 +731,7 @@ fn draw(
 		.constraints([
 			Constraint::Length(4), // header
 			Constraint::Min(5),    // body
-			Constraint::Length(5), // status footer
+			Constraint::Length(7), // status footer
 			Constraint::Length(1), // keybinding hints (no box, just one line)
 		])
 		.split(frame.area());
@@ -930,6 +936,25 @@ fn draw(
 		}
 	};
 	status_lines.push(Line::from(Span::raw(hash_line)));
+
+	// Also poll the local UI subscriber for the latest error and display it
+	if let Some(err) = ui_errs.last() {
+		let msg = format!("{} - {}: {}", err.level, err.target, err.message);
+		let err_line = Line::from(Span::styled(
+			format!("Last error: {}", msg),
+			Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+		));
+		status_lines.push(err_line);
+	}
+
+	// Most recent error (from engine snapshot or tracing capture)
+	if let Some((ref msg, _detail)) = &pres.last_error {
+		let err_line = Line::from(Span::styled(
+			format!("Last error: {}", msg),
+			Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+		));
+		status_lines.push(err_line);
+	}
 
 	// Legacy status and input
 	let mut legacy_status = pres.status.clone();

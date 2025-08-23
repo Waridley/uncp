@@ -74,6 +74,7 @@ async-channel.workspace = true
 futures-lite.workspace = true
 
 typed-generational-arena = "0.2.9"
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
 tempfile = "3.8"

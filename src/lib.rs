@@ -1,4 +1,6 @@
 //! # uncp - Un-copy (Duplicate File Detection)
+// NOTE: this module list is used to control documentation order
+
 //!
 //! A tool to help you de-duplicate your data. Multiple similarity metrics, asynchronous scanning,
 //! and high-performance file analysis. Builds a graph of file relationships for flexible querying.
@@ -503,6 +505,10 @@ pub use data::{RelationStore, ScanState};
 pub use detector::{DetectorConfig, DuplicateDetector, PathFilter};
 pub use engine::EngineMode;
 pub use error::{DetectorError, DetectorResult};
+
+pub mod log_ui;
+pub use log_ui::{UiErrorEvent, UiErrorQueueHandle, install_ui_error_layer};
+
 pub use events::{EventBus, SystemEvent};
 pub use query::Query;
 pub use relations::{

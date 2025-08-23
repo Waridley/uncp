@@ -210,6 +210,7 @@ impl BackgroundEngine {
 	) {
 		let (cmd_tx, cmd_rx) = channel::unbounded::<EngineCommand>();
 		let (evt_tx, evt_rx) = channel::unbounded::<EngineEvent>();
+		let ui_err_handle = crate::log_ui::install_ui_error_layer(200);
 
 		// Spawn the engine loop on a smol executor thread
 		std::thread::spawn(move || {
@@ -220,6 +221,16 @@ impl BackgroundEngine {
 				let cancellation_token =
 					std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 				let mut engine_running = false;
+				// If any tracing errors captured, surface most recent to UI via a snapshot
+				if let Some(err) = ui_err_handle.last() {
+					let mut snap = crate::ui::PresentationState::from_detector(&detector);
+					snap.last_error = Some((
+						format!("{} - {}: {}", err.level, err.target, err.message),
+						None,
+					));
+					let _ = evt_tx.send(EngineEvent::SnapshotReady(snap)).await;
+				}
+
 				// Save snapshots periodically to avoid losing too much work
 				let mut last_save = std::time::Instant::now();
 
@@ -231,6 +242,13 @@ impl BackgroundEngine {
 					let scoped = detector.files_pending_hash_under_prefix(p.to_string_lossy());
 					snap.pending_hash_scoped = Some(scoped);
 				}
+				// Attach latest tracing error if any
+				snap.last_error = ui_err_handle.last().map(|err| {
+					(
+						format!("{} - {}: {}", err.level, err.target, err.message),
+						None,
+					)
+				});
 				let _ = evt_tx.send(EngineEvent::SnapshotReady(snap)).await;
 				loop {
 					// Pull any pending commands without blocking
@@ -449,6 +467,13 @@ impl BackgroundEngine {
 							snap.file_table = detector.files_under_prefix_sorted_by_size(&path_str);
 							snap.current_path_filter = path_str.to_string();
 						}
+						// Attach latest tracing error if any
+						snap.last_error = ui_err_handle.last().map(|err| {
+							(
+								format!("{} - {}: {}", err.level, err.target, err.message),
+								None,
+							)
+						});
 						let _ = evt_tx.send(EngineEvent::SnapshotReady(snap)).await;
 
 						// Throttled autosave: every ~5s to avoid blocking frequently
@@ -478,6 +503,13 @@ impl BackgroundEngine {
 							snap.file_table = detector.files_under_prefix_sorted_by_size(&path_str);
 							snap.current_path_filter = path_str.to_string();
 						}
+						// Attach latest tracing error if any
+						snap.last_error = ui_err_handle.last().map(|err| {
+							(
+								format!("{} - {}: {}", err.level, err.target, err.message),
+								None,
+							)
+						});
 						let _ = evt_tx.send(EngineEvent::SnapshotReady(snap)).await;
 						smol::Timer::after(std::time::Duration::from_millis(500)).await;
 					}

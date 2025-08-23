@@ -2,6 +2,7 @@
 
 use async_channel as channel;
 use std::sync::{Arc, Mutex};
+use tracing::error;
 
 /// Identify which DataFrame/store the metadata belongs to.
 #[derive(Debug, Clone)]
@@ -46,15 +47,21 @@ impl EventBus {
 	/// Subscribe to events. Returns a Receiver that will get future events.
 	pub fn subscribe(self: &Arc<Self>) -> channel::Receiver<SystemEvent> {
 		let (tx, rx) = channel::unbounded();
-		self.subscribers.lock().unwrap().push(tx);
+		match self.subscribers.lock() {
+			Ok(mut subs) => subs.push(tx),
+			Err(_) => error!("EventBus: subscribers lock poisoned; subscriber not registered"),
+		}
 		rx
 	}
 
 	/// Broadcast an event to all subscribers. Best-effort, drops if a channel is full/closed.
 	pub fn emit(&self, event: SystemEvent) {
-		let subs = self.subscribers.lock().unwrap();
-		for sub in subs.iter() {
-			let _ = sub.try_send(event.clone());
+		if let Ok(subs) = self.subscribers.lock() {
+			for sub in subs.iter() {
+				let _ = sub.try_send(event.clone());
+			}
+		} else {
+			error!("EventBus: subscribers lock poisoned; dropping event");
 		}
 	}
 }
