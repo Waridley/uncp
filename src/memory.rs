@@ -82,19 +82,24 @@ impl MemoryManager {
 		trace!("Memory: attempting to free for {} bytes", bytes);
 
 		// Try to free memory by evicting LRU items
-		let mut freed = 0;
-		while !self.can_allocate(bytes - freed) && !self.file_cache.is_empty() {
+		let mut freed = 0usize;
+		while {
+			let remaining = bytes.saturating_sub(freed);
+			!self.can_allocate(remaining) && !self.file_cache.is_empty()
+		} {
 			if let Some((_, contents)) = self.file_cache.pop_lru() {
-				freed += contents.len();
+				freed = freed.saturating_add(contents.len());
 				self.current_bytes
 					.fetch_sub(contents.len(), Ordering::Relaxed);
+			} else {
+				break;
 			}
 		}
 
 		// Check if we have enough memory now
-		if self.can_allocate(bytes - freed) {
-			self.current_bytes
-				.fetch_add(bytes - freed, Ordering::Relaxed);
+		let remaining = bytes.saturating_sub(freed);
+		if self.can_allocate(remaining) {
+			self.current_bytes.fetch_add(remaining, Ordering::Relaxed);
 			Ok(())
 		} else {
 			Err(DetectorError::MemoryExhausted {
@@ -127,18 +132,20 @@ impl MemoryManager {
 	pub async fn load_file(&mut self, path: PathBuf) -> DetectorResult<&FileBytes> {
 		// Check if already in cache
 		if self.file_cache.contains(&path) {
-			return Ok(self.file_cache.get(&path).unwrap());
+			return self
+				.file_cache
+				.get(&path)
+				.ok_or_else(|| DetectorError::Io(std::io::Error::other("cache lookup failed")));
 		}
-
 		// Load file from disk
 		let data = smol::fs::read(&path).await?;
 		let contents = FileBytes::new(data);
-
 		// Put in cache
 		self.put_file(path.clone(), contents)?;
-
 		// Return reference to cached contents
-		Ok(self.file_cache.get(&path).unwrap())
+		self.file_cache
+			.get(&path)
+			.ok_or_else(|| DetectorError::Io(std::io::Error::other("failed to cache file")))
 	}
 }
 

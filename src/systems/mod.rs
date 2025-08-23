@@ -36,13 +36,19 @@ pub trait System {
 	fn optional_columns(&self) -> &[&'static str];
 
 	/// Frames this system is interested in observing
-	fn interested_frames(&self) -> &[DataFrameId] { &[] }
+	fn interested_frames(&self) -> &[DataFrameId] {
+		&[]
+	}
 
 	/// Columns this system is interested in observing
-	fn interested_columns(&self) -> &[&'static str] { &[] }
+	fn interested_columns(&self) -> &[&'static str] {
+		&[]
+	}
 
 	/// Whether this system frequently needs file contents
-	fn needs_content(&self) -> bool { false }
+	fn needs_content(&self) -> bool {
+		false
+	}
 
 	/// System description
 	fn description(&self) -> &'static str;

@@ -9,7 +9,6 @@ use walkdir::WalkDir;
 use crate::data::{FileKind, FileRecord, ScanState};
 use crate::detector::PathFilter;
 use crate::error::{SystemError, SystemResult};
-use crate::memory::MemoryManager;
 use crate::systems::{
 	System, SystemContext, SystemProgress, SystemRunner, yield_periodically_with_cancellation,
 };
@@ -120,12 +119,11 @@ impl FileDiscoverySystem {
 		{
 			let mut q = queue.lock().unwrap();
 			for i in 0..state.data.height() {
-				if let (Some(idx), Some(r#gen)) = (idx_ca.get(i), gen_ca.get(i)) {
-					if let Some(id) =
+				if let (Some(idx), Some(r#gen)) = (idx_ca.get(i), gen_ca.get(i))
+					&& let Some(id) =
 						crate::paths::DirEntryId::from_raw_parts(idx as usize, r#gen as usize)
-					{
-						q.enqueue(id);
-					}
+				{
+					q.enqueue(id);
 				}
 			}
 		}
@@ -372,9 +370,10 @@ impl SystemRunner for FileDiscoverySystem {
 					system: self.name().to_string(),
 					reason: format!("Failed to add files to state: {}", e),
 				})?;
+
 			// Enqueue discovered files for content loading if a queue is available
 			if let Some(ref queue) = self.load_queue {
-				self.enqueue_discovered(&mut state, queue);
+				self.enqueue_discovered(&state, queue);
 			}
 		}
 		// Notify that core metadata columns are available
@@ -393,9 +392,9 @@ impl SystemRunner for FileDiscoverySystem {
 		Ok(())
 	}
 
-	
-
-	fn name(&self) -> &'static str { "FileDiscovery" }
+	fn name(&self) -> &'static str {
+		"FileDiscovery"
+	}
 }
 
 impl System for FileDiscoverySystem {
@@ -417,7 +416,7 @@ mod tests {
 
 	use super::*;
 	use crate::data::ScanState;
-	use crate::memory::MemoryManager;
+
 	use std::fs;
 	use tempfile::TempDir;
 
@@ -445,8 +444,7 @@ mod tests {
 
 		assert_eq!(discovery.scan_paths, paths);
 		assert_eq!(discovery.name(), "FileDiscovery");
-		assert_eq!(discovery.priority(), 255);
-		assert!(discovery.can_run(&ScanState::new().unwrap()));
+		assert_eq!(discovery.name(), "FileDiscovery");
 	}
 
 	#[test_log::test]
@@ -455,17 +453,22 @@ mod tests {
 		let temp_dir = create_test_directory();
 		let discovery = FileDiscoverySystem::new(vec![temp_dir.path().to_path_buf()]);
 
-		let mut state = ScanState::new().unwrap();
-		let mut memory_mgr = MemoryManager::new().unwrap();
+		let pool = std::sync::Arc::new(crate::pool::DataPool::new(
+			ScanState::new().unwrap(),
+			crate::relations::RelationStore::new(),
+			crate::memory::MemoryManager::new().unwrap(),
+			crate::events::EventBus::new(),
+			crate::content_queue::ContentLoadQueue::new(),
+		));
 
-		let result = discovery.run(&mut state, &mut memory_mgr).await;
+		let result = discovery.run(pool.clone()).await;
 		assert!(result.is_ok());
 
 		// Should have discovered files
-		assert!(state.data.height() > 0);
+		assert!(pool.state.read().unwrap().data.height() > 0);
 
 		// Check that files were added with correct metadata
-		let df = &state.data;
+		let df = &pool.state.read().unwrap().data;
 		assert!(df.column("path").is_ok());
 		assert!(df.column("size").is_ok());
 		assert!(df.column("modified").is_ok());

@@ -49,10 +49,10 @@ impl ContentLoadQueue {
 	/// Remove a specific id from the queue and seen set.
 	pub fn remove(&mut self, id: &DirEntryId) {
 		let key = id.raw_parts();
-		if self.seen.remove(&key) {
-			if let Some(pos) = self.queue.iter().position(|x| x == id) {
-				self.queue.remove(pos);
-			}
+		if self.seen.remove(&key)
+			&& let Some(pos) = self.queue.iter().position(|x| x == id)
+		{
+			self.queue.remove(pos);
 		}
 	}
 

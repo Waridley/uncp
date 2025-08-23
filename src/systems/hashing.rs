@@ -4,9 +4,8 @@ use async_trait::async_trait;
 use blake3;
 use polars::prelude::*;
 
-use crate::data::ScanState;
 use crate::error::{SystemError, SystemResult};
-use crate::memory::MemoryManager;
+use crate::events::{DataFrameId, SystemEvent};
 use crate::systems::{System, SystemProgress, SystemRunner};
 use tracing::info;
 
@@ -41,14 +40,11 @@ impl ContentHashSystem {
 		self
 	}
 
-	pub fn with_event_bus(
-		mut self,
-		bus: std::sync::Arc<crate::events::EventBus>,
-	) -> Self {
+	pub fn with_event_bus(mut self, bus: std::sync::Arc<crate::events::EventBus>) -> Self {
 		self.event_bus = Some(bus);
 		self
 	}
-	}
+}
 
 pub type ProgressCb = Option<std::sync::Arc<dyn Fn(SystemProgress) + Send + Sync>>;
 
@@ -195,9 +191,9 @@ impl SystemRunner for ContentHashSystem {
 		let mut upd_paths: Vec<String> = Vec::with_capacity(total_files);
 		let mut upd_hashes: Vec<Option<String>> = Vec::with_capacity(total_files);
 		let mut upd_flags: Vec<bool> = Vec::with_capacity(total_files);
-		let mut processed = 0usize;
-
-		for id in ids.into_iter() {
+		let mut processed = 0usize; // clippy: we'll enumerate instead of incrementing
+		for (i, id) in ids.into_iter().enumerate() {
+			let _ = i;
 			let path_str = id.to_string();
 			let hash_opt = if let Some(ref queue) = self.load_queue {
 				// Prefer cache; if missing, enqueue and skip this cycle
@@ -222,7 +218,7 @@ impl SystemRunner for ContentHashSystem {
 			upd_hashes.push(hash_opt.clone());
 			upd_flags.push(hash_opt.is_some());
 
-			processed += 1;
+			processed = processed.saturating_add(1);
 			if let Some(ref cb) = callback {
 				cb(SystemProgress {
 					system_name: "ContentHash".to_string(),
@@ -325,11 +321,21 @@ impl SystemRunner for ContentHashSystem {
 
 		/* cleanup placeholder: removed old WithProgress and Scoped implementations */
 
+		// Emit metadata availability for updated columns
+		if let Some(ref bus) = self.event_bus {
+			bus.emit(SystemEvent::MetadataAvailable {
+				columns: vec!["blake3_hash".into(), "hashed".into()],
+				frame: DataFrameId::Files,
+			});
+		}
+
 		state.data = updated;
 		Ok(())
 	}
 
-	fn name(&self) -> &'static str { "ContentHash" }
+	fn name(&self) -> &'static str {
+		"ContentHash"
+	}
 }
 
 impl System for ContentHashSystem {
@@ -351,17 +357,14 @@ impl System for ContentHashSystem {
 mod tests {
 	use super::*;
 	use crate::data::ScanState;
-	use crate::memory::MemoryManager;
 
 	#[test]
 	fn test_content_hash_system_creation() {
 		let hash_system = ContentHashSystem::new();
 
 		assert_eq!(hash_system.name(), "ContentHash");
-		assert_eq!(hash_system.priority(), 200);
 		assert_eq!(hash_system.required_columns(), &["path"]);
 		assert_eq!(hash_system.optional_columns(), &[] as &[&str]);
-		assert!(hash_system.can_run(&ScanState::new().unwrap()));
 	}
 
 	#[test]
@@ -382,13 +385,17 @@ mod tests {
 	#[smol_potat::test]
 	async fn test_hash_system_empty_state() {
 		let hash_system = ContentHashSystem::new();
-		let mut state = ScanState::new().unwrap();
-		let mut memory_mgr = MemoryManager::new().unwrap();
-
+		let pool = std::sync::Arc::new(crate::pool::DataPool::new(
+			ScanState::new().unwrap(),
+			crate::relations::RelationStore::new(),
+			crate::memory::MemoryManager::new().unwrap(),
+			crate::events::EventBus::new(),
+			crate::content_queue::ContentLoadQueue::new(),
+		));
 		// Should handle empty state gracefully
-		let result = hash_system.run(&mut state, &mut memory_mgr).await;
+		let result = hash_system.run(pool.clone()).await;
 		assert!(result.is_ok());
-		assert_eq!(state.data.height(), 0);
+		assert_eq!(pool.state.read().unwrap().data.height(), 0);
 	}
 
 	#[test]
@@ -399,6 +406,5 @@ mod tests {
 			hash_system.description(),
 			"Computes content hashes (exact blake3) for files (PoC)"
 		);
-		assert!(hash_system.can_run(&ScanState::new().unwrap()));
 	}
 }

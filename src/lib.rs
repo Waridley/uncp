@@ -466,9 +466,8 @@ pub mod content;
 /// Content load request queue (in-memory) with de-duplication
 pub mod content_queue;
 
-
-	/// Shared thread-safe data pool for systems
-	pub mod pool;
+/// Shared thread-safe data pool for systems
+pub mod pool;
 
 /// Event bus for system-to-system communication.
 /// Systems emit broadcast events that UIs and other systems can subscribe to.

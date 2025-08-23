@@ -289,7 +289,8 @@ pub struct DetectorConfig {
 impl Default for DetectorConfig {
 	fn default() -> Self {
 		Self {
-			memory_settings: Settings::from_sysinfo().expect("failed to read sysinfo"),
+			memory_settings: Settings::from_sysinfo()
+				.unwrap_or_else(|_| Settings::new(512 * 1024 * 1024, 64)),
 			disable_auto_cache: false,
 			path_filter: PathFilter::default(),
 		}
@@ -301,7 +302,8 @@ impl DetectorConfig {
 	#[cfg(test)]
 	pub fn for_testing() -> Self {
 		Self {
-			memory_settings: Settings::from_sysinfo().expect("failed to read sysinfo"),
+			memory_settings: Settings::from_sysinfo()
+				.unwrap_or_else(|_| Settings::new(512 * 1024 * 1024, 64)),
 			disable_auto_cache: true,
 			path_filter: PathFilter::default(),
 		}
@@ -415,13 +417,23 @@ impl DuplicateDetector {
 	pub fn new(config: DetectorConfig) -> DetectorResult<Self> {
 		let memory_settings = config.memory_settings.clone();
 		let event_bus = crate::events::EventBus::new();
-		let content_store = crate::content::ContentStore::new(event_bus.clone());
+		let _content_store = crate::content::ContentStore::new(event_bus.clone());
 		let state = ScanState::new()?;
 		let relations = RelationStore::new();
 		let memory_mgr = MemoryManager::with_settings(memory_settings)?;
 		let load_queue = crate::content_queue::ContentLoadQueue::new();
-		let pool = std::sync::Arc::new(crate::pool::DataPool::new(state, relations, memory_mgr, event_bus.clone(), load_queue));
-		Ok(Self { pool, scheduler: SystemScheduler::new(), config })
+		let pool = std::sync::Arc::new(crate::pool::DataPool::new(
+			state,
+			relations,
+			memory_mgr,
+			event_bus.clone(),
+			load_queue,
+		));
+		Ok(Self {
+			pool,
+			scheduler: SystemScheduler::new(),
+			config,
+		})
 	}
 
 	/// Request that a file's contents be loaded (e.g., by a system). This queues a load and returns immediately.
@@ -471,11 +483,13 @@ impl DuplicateDetector {
 	/// Create a detector with cache loading from a specific directory (for testing)
 	#[cfg(test)]
 	pub fn new_with_cache_dir(config: DetectorConfig, cache_dir: PathBuf) -> DetectorResult<Self> {
-		let mut this = Self::new(config)?;
+		let this = Self::new(config)?;
 		// Try loading cache from specified directory (best-effort)
 		if let Ok(Some((state, relations))) = CacheManager::new(cache_dir).load_all() {
-			this.pool.state = std::sync::Arc::new(std::sync::RwLock::new(state));
-			this.pool.relations = std::sync::Arc::new(std::sync::RwLock::new(relations));
+			let mut state_guard = this.pool.state.write().unwrap();
+			*state_guard = state;
+			let mut rel_guard = this.pool.relations.write().unwrap();
+			*rel_guard = relations;
 		}
 		Ok(this)
 	}
@@ -485,7 +499,9 @@ impl DuplicateDetector {
 		let mut discovery = FileDiscoverySystem::new(vec![path])
 			.with_event_bus(self.pool.bus.clone())
 			.with_load_queue(self.pool.load_queue.clone());
-		if self.config.path_filter.has_patterns() { discovery = discovery.with_path_filter(self.config.path_filter.clone()); }
+		if self.config.path_filter.has_patterns() {
+			discovery = discovery.with_path_filter(self.config.path_filter.clone());
+		}
 		self.scheduler.add_system(discovery);
 		// Ensure content loader and request adapter are installed so content begins loading
 		self.install_request_adapter();
@@ -500,12 +516,17 @@ impl DuplicateDetector {
 		path: PathBuf,
 		progress: std::sync::Arc<dyn Fn(crate::systems::SystemProgress) + Send + Sync>,
 	) -> DetectorResult<()> {
-		info!("Detector: scan_directory {} (with progress)", path.display());
+		info!(
+			"Detector: scan_directory {} (with progress)",
+			path.display()
+		);
 		let mut discovery = FileDiscoverySystem::new(vec![path])
 			.with_progress_callback(progress)
 			.with_event_bus(self.pool.bus.clone())
 			.with_load_queue(self.pool.load_queue.clone());
-		if self.config.path_filter.has_patterns() { discovery = discovery.with_path_filter(self.config.path_filter.clone()); }
+		if self.config.path_filter.has_patterns() {
+			discovery = discovery.with_path_filter(self.config.path_filter.clone());
+		}
 		// Ensure content loader and request adapter are installed so content begins loading
 		self.install_request_adapter();
 		self.install_content_loader(512);
@@ -520,12 +541,17 @@ impl DuplicateDetector {
 		progress: std::sync::Arc<dyn Fn(crate::systems::SystemProgress) + Send + Sync>,
 		_cancellation_token: std::sync::Arc<std::sync::atomic::AtomicBool>,
 	) -> DetectorResult<()> {
-		info!("Detector: scan_directory {} (with progress and cancellation)", path.display());
+		info!(
+			"Detector: scan_directory {} (with progress and cancellation)",
+			path.display()
+		);
 		let mut discovery = FileDiscoverySystem::new(vec![path])
 			.with_progress_callback(progress)
 			.with_event_bus(self.pool.bus.clone())
 			.with_load_queue(self.pool.load_queue.clone());
-		if self.config.path_filter.has_patterns() { discovery = discovery.with_path_filter(self.config.path_filter.clone()); }
+		if self.config.path_filter.has_patterns() {
+			discovery = discovery.with_path_filter(self.config.path_filter.clone());
+		}
 		// Ensure content loader and request adapter are installed so content begins loading
 		self.install_request_adapter();
 		self.install_content_loader(512);
@@ -588,12 +614,11 @@ impl DuplicateDetector {
 		{
 			let mut q = queue.lock().unwrap();
 			for i in 0..state.data.height() {
-				if let (Some(idx), Some(r#gen)) = (idx_ca.get(i), gen_ca.get(i)) {
-					if let Some(id) =
+				if let (Some(idx), Some(r#gen)) = (idx_ca.get(i), gen_ca.get(i))
+					&& let Some(id) =
 						crate::paths::DirEntryId::from_raw_parts(idx as usize, r#gen as usize)
-					{
-						q.enqueue(id);
-					}
+				{
+					q.enqueue(id);
 				}
 			}
 		}
@@ -652,13 +677,20 @@ impl DuplicateDetector {
 		self.scheduler = SystemScheduler::new();
 	}
 
-
 	// Disk caching stubs for now
 
-	pub fn total_files(&self) -> usize { self.pool.state.read().unwrap().data.height() }
+	pub fn total_files(&self) -> usize {
+		self.pool.state.read().unwrap().data.height()
+	}
 	pub fn files_pending_hash(&self) -> usize {
 		let state = self.pool.state.read().unwrap();
-		state.data.column("hashed").ok().and_then(|s| s.bool().ok()).map(|b| b.into_iter().filter(|v| matches!(v, Some(false))).count()).unwrap_or(0)
+		state
+			.data
+			.column("hashed")
+			.ok()
+			.and_then(|s| s.bool().ok())
+			.map(|b| b.into_iter().filter(|v| matches!(v, Some(false))).count())
+			.unwrap_or(0)
 	}
 
 	pub fn files_pending_hash_under_prefix<S: AsRef<str>>(&self, prefix: S) -> usize {
@@ -666,7 +698,9 @@ impl DuplicateDetector {
 		let df = &state.data;
 
 		let pref = prefix.as_ref();
-		if df.height() == 0 { return 0; }
+		if df.height() == 0 {
+			return 0;
+		}
 		let s = match df.column("path").and_then(|c| c.struct_()) {
 			Ok(s) => s,
 			Err(_) => return 0,
@@ -710,8 +744,13 @@ impl DuplicateDetector {
 		let pref = prefix.as_ref();
 		let df_guard = self.pool.state.read().unwrap();
 		let df = &df_guard.data;
-		if df.height() == 0 { return 0; }
-		let s = match df.column("path").and_then(|c| c.struct_()) { Ok(s) => s, Err(_) => return 0 };
+		if df.height() == 0 {
+			return 0;
+		}
+		let s = match df.column("path").and_then(|c| c.struct_()) {
+			Ok(s) => s,
+			Err(_) => return 0,
+		};
 
 		let idx_series = match s.field_by_name("idx") {
 			Ok(series) => series.clone(),
@@ -754,8 +793,13 @@ impl DuplicateDetector {
 		let df_guard = self.pool.state.read().unwrap();
 		let df = &df_guard.data;
 		let mut files = Vec::new();
-		if df.height() == 0 { return files; }
-		let paths = match df.column("path").and_then(|c| c.struct_()) { Ok(s) => s, Err(_) => return files };
+		if df.height() == 0 {
+			return files;
+		}
+		let paths = match df.column("path").and_then(|c| c.struct_()) {
+			Ok(s) => s,
+			Err(_) => return files,
+		};
 
 		let idx_series = match paths.field_by_name("idx") {
 			Ok(series) => series.clone(),
@@ -803,7 +847,9 @@ impl DuplicateDetector {
 
 		// Get all cached files with their metadata
 		let df = self.pool.state.read().unwrap().data.clone();
-		if df.height() == 0 { return Ok((0, 0)); }
+		if df.height() == 0 {
+			return Ok((0, 0));
+		}
 
 		// Build a mask for files that should be kept
 		let mut keep_mask = Vec::new();
@@ -815,27 +861,45 @@ impl DuplicateDetector {
 		let cached_mtimes = df.column("modified")?.i64()?;
 		let hashed_flags = df.column("hashed")?.bool()?;
 
-		for (((path_opt, cached_size_opt), cached_mtime_opt), hashed_opt) in paths.into_iter().zip(cached_sizes.into_iter()).zip(cached_mtimes.into_iter()).zip(hashed_flags.into_iter()) {
-			if let (Some(path_str), Some(cached_size), Some(cached_mtime), Some(is_hashed)) = (path_opt, cached_size_opt, cached_mtime_opt, hashed_opt) {
+		for (((path_opt, cached_size_opt), cached_mtime_opt), hashed_opt) in paths
+			.into_iter()
+			.zip(cached_sizes.into_iter())
+			.zip(cached_mtimes.into_iter())
+			.zip(hashed_flags.into_iter())
+		{
+			if let (Some(path_str), Some(cached_size), Some(cached_mtime), Some(is_hashed)) =
+				(path_opt, cached_size_opt, cached_mtime_opt, hashed_opt)
+			{
 				let path = Path::new(path_str);
 				match fs::metadata(path) {
 					Ok(metadata) => {
 						let current_size = metadata.len();
 						let current_mtime = match metadata.modified() {
-							Ok(system_time) => chrono::DateTime::<chrono::Utc>::from(system_time).timestamp_nanos_opt().unwrap_or(0),
+							Ok(system_time) => chrono::DateTime::<chrono::Utc>::from(system_time)
+								.timestamp_nanos_opt()
+								.unwrap_or(0),
 							Err(_) => 0,
 						};
 						keep_mask.push(true);
 						if current_size != cached_size || current_mtime != cached_mtime {
 							invalidate_mask.push(true);
-							if is_hashed { files_invalidated += 1; }
+							if is_hashed {
+								files_invalidated += 1;
+							}
 						} else {
 							invalidate_mask.push(false);
 						}
 					}
-					Err(_) => { keep_mask.push(false); invalidate_mask.push(false); files_removed += 1; }
+					Err(_) => {
+						keep_mask.push(false);
+						invalidate_mask.push(false);
+						files_removed += 1;
+					}
 				}
-			} else { keep_mask.push(false); invalidate_mask.push(false); }
+			} else {
+				keep_mask.push(false);
+				invalidate_mask.push(false);
+			}
 		}
 
 		// Apply both masks
@@ -843,20 +907,33 @@ impl DuplicateDetector {
 			let keep_series = Series::new("keep".into(), keep_mask.clone());
 			let invalidate_series = Series::new("invalidate".into(), invalidate_mask.clone());
 			let mut state_guard = self.pool.state.write().unwrap();
-			state_guard.data = state_guard.data.clone().lazy()
-				.with_columns([when(lit(invalidate_series)).then(lit(false)).otherwise(col("hashed")).alias("hashed")])
+			state_guard.data = state_guard
+				.data
+				.clone()
+				.lazy()
+				.with_columns([when(lit(invalidate_series))
+					.then(lit(false))
+					.otherwise(col("hashed"))
+					.alias("hashed")])
 				.filter(lit(keep_series))
 				.collect()?;
 		}
 
-		info!("Cache validation: {} files removed, {} files marked for re-processing", files_removed, files_invalidated);
+		info!(
+			"Cache validation: {} files removed, {} files marked for re-processing",
+			files_removed, files_invalidated
+		);
 		Ok((files_removed, files_invalidated))
 	}
 	pub fn files_by_type_counts(&self) -> std::collections::HashMap<String, usize> {
 		let mut map = std::collections::HashMap::new();
 		let state = self.pool.state.read().unwrap();
-		if let Ok(s) = state.data.column("file_type") && let Ok(utf8) = s.str() {
-			for v in utf8.into_iter().flatten() { *map.entry(v.to_string()).or_insert(0) += 1; }
+		if let Ok(s) = state.data.column("file_type")
+			&& let Ok(utf8) = s.str()
+		{
+			for v in utf8.into_iter().flatten() {
+				*map.entry(v.to_string()).or_insert(0) += 1;
+			}
 		}
 		map
 	}
@@ -890,7 +967,7 @@ mod tests {
 		assert!(detector.is_ok());
 
 		let detector = detector.unwrap();
-		assert_eq!(detector.state.data.height(), 0);
+		assert_eq!(detector.pool.state.read().unwrap().data.height(), 0);
 	}
 
 	#[test_log::test]
@@ -965,12 +1042,18 @@ mod tests {
 		let mut detector = DuplicateDetector::new(config).unwrap();
 
 		// Add some dummy data to state
-		detector.state.scan_id = 42;
+		{
+			let mut state = detector.pool.state.write().unwrap();
+			state.scan_id = 42;
+		}
 
 		detector.clear_state();
 
 		// State should be reset
-		assert_eq!(detector.state.scan_id, 1); // New state starts with scan_id 1
-		assert_eq!(detector.state.data.height(), 0);
+		{
+			let state = detector.pool.state.read().unwrap();
+			assert_eq!(state.scan_id, 1);
+			assert_eq!(state.data.height(), 0);
+		}
 	}
 }

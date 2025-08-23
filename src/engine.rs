@@ -6,7 +6,6 @@ use async_channel as channel;
 use futures_lite::future;
 use tracing::{info, warn};
 
-use crate::events::SystemEvent;
 use crate::systems::SystemProgress;
 use crate::{DuplicateDetector, paths::default_cache_dir};
 
