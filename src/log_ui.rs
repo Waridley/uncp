@@ -58,6 +58,21 @@ impl UiErrorLayer {
 	}
 }
 
+pub fn with_min_level(capacity: usize, min_level: Level) -> (UiErrorLayer, UiErrorQueueHandle) {
+	let queue = Arc::new(Mutex::new(VecDeque::with_capacity(capacity)));
+	let handle = UiErrorQueueHandle {
+		queue: queue.clone(),
+	};
+	(
+		UiErrorLayer {
+			queue,
+			capacity,
+			min_level,
+		},
+		handle,
+	)
+}
+
 struct MsgVisitor {
 	message: Option<String>,
 	fields: Vec<(String, String)>,
