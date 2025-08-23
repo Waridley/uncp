@@ -411,20 +411,61 @@ pub struct DuplicateDetector {
 	pub scheduler: SystemScheduler,
 	/// Memory manager for resource optimization and limits
 	pub memory_mgr: MemoryManager,
+	/// Event bus for broadcast events across systems/UI
+	pub event_bus: std::sync::Arc<crate::events::EventBus>,
+	/// Central content store orchestrating ref-counted loads and releases
+	pub content_store: crate::content::ContentStore,
 	/// Configuration for behavior and performance tuning
 	pub config: DetectorConfig,
+	/// Pending load requests queue (global)
+	pub load_queue: std::sync::Arc<std::sync::Mutex<crate::content_queue::ContentLoadQueue>>,
 }
 
 impl DuplicateDetector {
 	pub fn new(config: DetectorConfig) -> DetectorResult<Self> {
 		let memory_settings = config.memory_settings.clone();
+		let event_bus = crate::events::EventBus::new();
+		let content_store = crate::content::ContentStore::new(event_bus.clone());
 		Ok(Self {
 			state: ScanState::new()?,
 			relations: RelationStore::new(),
 			scheduler: SystemScheduler::new(),
 			memory_mgr: MemoryManager::with_settings(memory_settings)?,
+			event_bus,
+			content_store,
 			config,
+			load_queue: crate::content_queue::ContentLoadQueue::new(),
 		})
+	}
+
+	/// Request that a file's contents be loaded (e.g., by a system). This queues a load and returns immediately.
+	pub async fn request_content_load(
+		&mut self,
+		id: crate::paths::DirEntryId,
+	) -> DetectorResult<()> {
+		// For now, directly acquire; later, this can go through a bounded queue with backpressure.
+		self.content_store.acquire(id, &mut self.memory_mgr).await
+	}
+
+	/// Install the content loader system so it runs before hashing.
+	pub fn install_content_loader(&mut self, max_per_run: usize) {
+		let loader = crate::systems::loader::ContentLoaderSystem::new(self.load_queue.clone())
+			.with_max_per_run(max_per_run);
+		self.scheduler.add_boxed_system(Box::new(loader));
+	}
+
+	/// Install the request->queue adapter so systems can request loads via events.
+	pub fn install_request_adapter(&mut self) {
+		let adapter = crate::systems::event_adapter::RequestToQueueAdapter::new(
+			self.event_bus.clone(),
+			self.load_queue.clone(),
+		);
+		self.scheduler.add_boxed_system(Box::new(adapter));
+	}
+
+	/// Release a previously requested file's contents when no longer needed.
+	pub fn release_content(&mut self, id: crate::paths::DirEntryId) {
+		self.content_store.release(id, &mut self.memory_mgr)
 	}
 
 	pub fn new_with_cache(config: DetectorConfig) -> DetectorResult<Self> {
@@ -454,11 +495,17 @@ impl DuplicateDetector {
 
 	pub async fn scan_directory(&mut self, path: PathBuf) -> DetectorResult<()> {
 		info!("Detector: scan_directory {}", path.display());
-		let mut discovery = FileDiscoverySystem::new(vec![path]);
+		let mut discovery = FileDiscoverySystem::new(vec![path])
+			.with_event_bus(self.event_bus.clone())
+			.with_load_queue(self.load_queue.clone());
 		if self.config.path_filter.has_patterns() {
 			discovery = discovery.with_path_filter(self.config.path_filter.clone());
 		}
 		self.scheduler.add_system(discovery);
+		// Ensure content loader and request adapter are installed so content begins loading
+		self.install_request_adapter();
+		self.install_content_loader(512);
+
 		let res = self
 			.scheduler
 			.run_all(&mut self.state, &mut self.memory_mgr)
@@ -482,11 +529,19 @@ impl DuplicateDetector {
 			"Detector: scan_directory {} (with progress)",
 			path.display()
 		);
-		let mut discovery = FileDiscoverySystem::new(vec![path]).with_progress_callback(progress);
+		let mut discovery = FileDiscoverySystem::new(vec![path])
+			.with_progress_callback(progress)
+			.with_event_bus(self.event_bus.clone())
+			.with_load_queue(self.load_queue.clone());
 		if self.config.path_filter.has_patterns() {
 			discovery = discovery.with_path_filter(self.config.path_filter.clone());
 		}
+		// Ensure content loader and request adapter are installed so content begins loading
+		self.install_request_adapter();
+		self.install_content_loader(512);
+
 		self.scheduler.add_system(discovery);
+
 		let res = self
 			.scheduler
 			.run_all(&mut self.state, &mut self.memory_mgr)
@@ -511,10 +566,17 @@ impl DuplicateDetector {
 			"Detector: scan_directory {} (with progress and cancellation)",
 			path.display()
 		);
-		let mut discovery = FileDiscoverySystem::new(vec![path]).with_progress_callback(progress);
+		let mut discovery = FileDiscoverySystem::new(vec![path])
+			.with_progress_callback(progress)
+			.with_event_bus(self.event_bus.clone())
+			.with_load_queue(self.load_queue.clone());
 		if self.config.path_filter.has_patterns() {
 			discovery = discovery.with_path_filter(self.config.path_filter.clone());
 		}
+		// Ensure content loader and request adapter are installed so content begins loading
+		self.install_request_adapter();
+		self.install_content_loader(512);
+
 		self.scheduler.add_system(discovery);
 		let res = self
 			.scheduler
@@ -533,11 +595,16 @@ impl DuplicateDetector {
 	pub async fn scan_and_hash(&mut self, path: PathBuf) -> DetectorResult<()> {
 		info!("Detector: scan_and_hash {}", path.display());
 		// Run discovery first
-		let discovery = FileDiscoverySystem::new(vec![path.clone()]);
+		let discovery = FileDiscoverySystem::new(vec![path.clone()])
+			.with_event_bus(self.event_bus.clone())
+			.with_load_queue(self.load_queue.clone());
 		self.scheduler.add_system(discovery);
-		// Then hashing (scoped to requested path)
-		self.scheduler
-			.add_system(ContentHashSystem::new().with_scope_prefix(path.to_string_lossy()));
+		// Then hashing (scoped to requested path); provide queue
+		self.scheduler.add_system(
+			ContentHashSystem::new()
+				.with_scope_prefix(path.to_string_lossy())
+				.with_load_queue(self.load_queue.clone()),
+		);
 		let res = self
 			.scheduler
 			.run_all(&mut self.state, &mut self.memory_mgr)
@@ -557,11 +624,16 @@ impl DuplicateDetector {
 		progress: std::sync::Arc<dyn Fn(SystemProgress) + Send + Sync>,
 	) -> DetectorResult<()> {
 		if let Some(p) = path.clone() {
-			let discovery =
-				FileDiscoverySystem::new(vec![p.clone()]).with_progress_callback(progress.clone());
+			let discovery = FileDiscoverySystem::new(vec![p.clone()])
+				.with_progress_callback(progress.clone())
+				.with_load_queue(self.load_queue.clone());
 			self.scheduler.add_system(discovery);
 		}
-		self.scheduler.add_system(ContentHashSystem::new());
+		self.scheduler
+			.add_system(ContentHashSystem::new().with_load_queue(self.load_queue.clone()));
+		// Ensure content loader and request adapter are installed so content begins loading
+		self.install_request_adapter();
+		self.install_content_loader(512);
 		let res = self
 			.scheduler
 			.run_all(&mut self.state, &mut self.memory_mgr)
@@ -574,6 +646,30 @@ impl DuplicateDetector {
 			let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
 		}
 		res
+	}
+
+	/// Convenience: enqueue all discovered files after a scan
+	pub fn enqueue_all_discovered(&self) {
+		let queue = self.load_queue.clone();
+		let state = &self.state;
+		if let Ok(path_col) = state.data.column("path")
+			&& let Ok(pstruct) = path_col.struct_()
+			&& let Ok(idx_series) = pstruct.field_by_name("idx")
+			&& let Ok(gen_series) = pstruct.field_by_name("gen")
+			&& let Ok(idx_ca) = idx_series.u64()
+			&& let Ok(gen_ca) = gen_series.u64()
+		{
+			let mut q = queue.lock().unwrap();
+			for i in 0..state.data.height() {
+				if let (Some(idx), Some(r#gen)) = (idx_ca.get(i), gen_ca.get(i)) {
+					if let Some(id) =
+						crate::paths::DirEntryId::from_raw_parts(idx as usize, r#gen as usize)
+					{
+						q.enqueue(id);
+					}
+				}
+			}
+		}
 	}
 
 	pub async fn process_until_complete(&mut self) -> DetectorResult<()> {

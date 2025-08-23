@@ -28,30 +28,26 @@ impl SystemScheduler {
 		self.systems.push(Box::new(system));
 	}
 
+	/// Add a pre-boxed system (useful for dynamic registration from UIs/plugins)
+	pub fn add_boxed_system(&mut self, system: Box<dyn SystemRunner>) {
+		debug!("Scheduler: added boxed system");
+		self.systems.push(system);
+	}
+
 	pub async fn run_all(
 		&self,
 		state: &mut ScanState,
 		memory_mgr: &mut MemoryManager,
 	) -> SystemResult<()> {
-		// Filter systems that can run
-		let mut runnable: Vec<&Box<dyn SystemRunner>> =
+		// Sequential single pass without priority to keep behavior deterministic for now
+		let runnable: Vec<&Box<dyn SystemRunner>> =
 			self.systems.iter().filter(|s| s.can_run(state)).collect();
-
-		// Sort by priority descending
-		runnable.sort_by_key(|s| std::cmp::Reverse(s.priority()));
 		info!("Scheduler: running {} systems", runnable.len());
-
-		// Execute sequentially for now; parallelism can be added when dependencies are managed
 		for system in runnable.into_iter() {
-			debug!(
-				"Scheduler: running system {} (priority {})",
-				system.name(),
-				system.priority()
-			);
+			debug!("Scheduler: running system {}", system.name());
 			system.run(state, memory_mgr).await?;
 			debug!("Scheduler: completed system {}", system.name());
 		}
-
 		Ok(())
 	}
 
@@ -61,17 +57,10 @@ impl SystemScheduler {
 		memory_mgr: &mut MemoryManager,
 		cancellation_token: std::sync::Arc<std::sync::atomic::AtomicBool>,
 	) -> SystemResult<()> {
-		// Filter systems that can run
-		let mut runnable: Vec<&Box<dyn SystemRunner>> =
+		let runnable: Vec<&Box<dyn SystemRunner>> =
 			self.systems.iter().filter(|s| s.can_run(state)).collect();
-
-		// Sort by priority descending
-		runnable.sort_by_key(|s| std::cmp::Reverse(s.priority()));
 		info!("Scheduler: running {} systems", runnable.len());
-
-		// Execute sequentially for now; parallelism can be added when dependencies are managed
 		for system in runnable.into_iter() {
-			// Check for cancellation before running each system
 			if cancellation_token.load(std::sync::atomic::Ordering::Relaxed) {
 				info!("Scheduler: operation cancelled");
 				return Err(crate::error::SystemError::ExecutionFailed {
@@ -79,18 +68,12 @@ impl SystemScheduler {
 					reason: "Operation was cancelled".to_string(),
 				});
 			}
-
-			debug!(
-				"Scheduler: running system {} (priority {})",
-				system.name(),
-				system.priority()
-			);
+			debug!("Scheduler: running system {}", system.name());
 			system
 				.run_with_cancellation(state, memory_mgr, cancellation_token.clone())
 				.await?;
 			debug!("Scheduler: completed system {}", system.name());
 		}
-
 		Ok(())
 	}
 }

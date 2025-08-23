@@ -7,7 +7,9 @@ use crate::error::SystemResult;
 use crate::memory::MemoryManager;
 
 pub mod discovery;
+pub mod event_adapter;
 pub mod hashing;
+pub mod loader;
 pub mod scheduler;
 
 pub use discovery::FileDiscoverySystem;
@@ -33,6 +35,11 @@ pub trait SystemRunner: Send + Sync {
 
 	/// Check if this system can run (dependencies met)
 	fn can_run(&self, state: &ScanState) -> bool;
+
+	/// Hint if there is work to do; default defers to can_run
+	fn has_work(&self, state: &ScanState) -> bool {
+		self.can_run(state)
+	}
 
 	/// System priority (higher number = higher priority)
 	fn priority(&self) -> u8;
@@ -98,6 +105,8 @@ pub struct SystemContext {
 	pub yield_interval: std::time::Duration,
 	pub progress_callback: Option<Box<dyn Fn(SystemProgress) + Send + Sync>>,
 	pub cancellation_token: std::sync::Arc<std::sync::atomic::AtomicBool>,
+	/// Optional event bus for broadcast events between systems/UI
+	pub event_bus: Option<std::sync::Arc<crate::events::EventBus>>,
 }
 
 impl Default for SystemContext {
@@ -107,6 +116,7 @@ impl Default for SystemContext {
 			yield_interval: std::time::Duration::from_millis(100),
 			progress_callback: None,
 			cancellation_token: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+			event_bus: None,
 		}
 	}
 }
@@ -139,6 +149,11 @@ impl SystemContext {
 		token: std::sync::Arc<std::sync::atomic::AtomicBool>,
 	) -> Self {
 		self.cancellation_token = token;
+		self
+	}
+
+	pub fn with_event_bus(mut self, bus: std::sync::Arc<crate::events::EventBus>) -> Self {
+		self.event_bus = Some(bus);
 		self
 	}
 

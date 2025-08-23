@@ -6,6 +6,7 @@ use async_channel as channel;
 use futures_lite::future;
 use tracing::{info, warn};
 
+use crate::events::SystemEvent;
 use crate::systems::SystemProgress;
 use crate::{DuplicateDetector, paths::default_cache_dir};
 
@@ -62,7 +63,6 @@ use crate::{DuplicateDetector, paths::default_cache_dir};
 ///
 /// Commands are sent through async channels and are inherently thread-safe.
 /// Multiple producers can send commands concurrently without synchronization.
-#[derive(Debug, Clone)]
 pub enum EngineCommand {
 	/// Change the directory path being scanned for duplicate files
 	SetPath(PathBuf),
@@ -80,6 +80,8 @@ pub enum EngineCommand {
 	SetPathFilter(crate::PathFilter),
 	/// Remove all path filters to process all discovered files
 	ClearPathFilter,
+	/// Dynamically register a new system to be picked up by the scheduler
+	RegisterSystem(Box<dyn crate::systems::SystemRunner + Send + Sync>),
 }
 
 #[derive(Debug, Clone)]
@@ -301,6 +303,10 @@ impl BackgroundEngine {
 							EngineCommand::ClearPathFilter => {
 								info!("Engine: clearing path filter");
 								detector.config.path_filter = crate::PathFilter::default();
+							}
+							EngineCommand::RegisterSystem(system) => {
+								// Register the system dynamically so UIs/plugins can extend processing
+								detector.scheduler.add_boxed_system(system);
 							}
 						}
 					}

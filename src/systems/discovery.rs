@@ -18,6 +18,11 @@ use crate::systems::{
 pub struct FileDiscoverySystem {
 	/// Optional progress callback (shared for TUI/GUI)
 	pub progress_callback: Option<std::sync::Arc<dyn Fn(SystemProgress) + Send + Sync>>,
+	/// Optional event bus for broadcasting discovery events
+	pub event_bus: Option<std::sync::Arc<crate::events::EventBus>>,
+	/// Optional load queue for content loader system
+	pub load_queue:
+		Option<std::sync::Arc<std::sync::Mutex<crate::content_queue::ContentLoadQueue>>>,
 	/// Paths to scan
 	pub scan_paths: Vec<PathBuf>,
 	/// Whether to follow symbolic links
@@ -48,6 +53,8 @@ impl FileDiscoverySystem {
 			min_file_size: 0,
 			max_file_size: None,
 			progress_callback: None,
+			event_bus: None,
+			load_queue: None,
 			path_filter: None,
 		}
 	}
@@ -98,6 +105,47 @@ impl FileDiscoverySystem {
 		self
 	}
 
+	/// Enqueue discovered files for content loading
+	pub fn enqueue_discovered(
+		&self,
+		state: &ScanState,
+		queue: &std::sync::Arc<std::sync::Mutex<crate::content_queue::ContentLoadQueue>>,
+	) {
+		if let Ok(path_col) = state.data.column("path")
+			&& let Ok(pstruct) = path_col.struct_()
+			&& let Ok(idx_series) = pstruct.field_by_name("idx")
+			&& let Ok(gen_series) = pstruct.field_by_name("gen")
+			&& let Ok(idx_ca) = idx_series.u64()
+			&& let Ok(gen_ca) = gen_series.u64()
+		{
+			let mut q = queue.lock().unwrap();
+			for i in 0..state.data.height() {
+				if let (Some(idx), Some(r#gen)) = (idx_ca.get(i), gen_ca.get(i)) {
+					if let Some(id) =
+						crate::paths::DirEntryId::from_raw_parts(idx as usize, r#gen as usize)
+					{
+						q.enqueue(id);
+					}
+				}
+			}
+		}
+	}
+
+	/// Attach an event bus for broadcasting discovery events
+	pub fn with_event_bus(mut self, bus: std::sync::Arc<crate::events::EventBus>) -> Self {
+		self.event_bus = Some(bus);
+		self
+	}
+
+	/// Attach a load queue for content requests
+	pub fn with_load_queue(
+		mut self,
+		queue: std::sync::Arc<std::sync::Mutex<crate::content_queue::ContentLoadQueue>>,
+	) -> Self {
+		self.load_queue = Some(queue);
+		self
+	}
+
 	/// Discover files in the configured paths
 	pub async fn discover_files(&self, context: &SystemContext) -> SystemResult<Vec<FileRecord>> {
 		info!(
@@ -116,6 +164,12 @@ impl FileDiscoverySystem {
 			all_files.extend(files);
 		}
 
+		// Emit event with discovered count
+		if let Some(ref bus) = context.event_bus {
+			bus.emit(crate::events::SystemEvent::FilesDiscovered {
+				count: all_files.len(),
+			});
+		}
 		Ok(all_files)
 	}
 
@@ -307,7 +361,10 @@ impl SystemRunner for FileDiscoverySystem {
 		state: &mut ScanState,
 		_memory_mgr: &mut MemoryManager,
 	) -> SystemResult<()> {
-		let context = SystemContext::new();
+		let mut context = SystemContext::new();
+		if let Some(ref bus) = self.event_bus {
+			context = context.with_event_bus(bus.clone());
+		}
 		let files = self.discover_files(&context).await?;
 
 		state
@@ -316,6 +373,22 @@ impl SystemRunner for FileDiscoverySystem {
 				system: self.name().to_string(),
 				reason: format!("Failed to add files to state: {}", e),
 			})?;
+		// Enqueue discovered files for content loading if a queue is available
+		if let Some(ref queue) = self.load_queue {
+			self.enqueue_discovered(state, queue);
+		}
+		// Notify that core metadata columns are available
+		if let Some(ref bus) = self.event_bus {
+			bus.emit(crate::events::SystemEvent::MetadataAvailable {
+				columns: vec![
+					"path".to_string(),
+					"size".to_string(),
+					"modified".to_string(),
+					"file_type".to_string(),
+				],
+				frame: crate::events::DataFrameId::Files,
+			});
+		}
 
 		Ok(())
 	}

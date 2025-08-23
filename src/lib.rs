@@ -460,6 +460,16 @@ pub mod ui;
 /// for different performance profiles based on system capabilities.
 pub mod engine;
 
+/// Content store providing ref-counted loading/unloading of file bytes.
+pub mod content;
+
+/// Content load request queue (in-memory) with de-duplication
+pub mod content_queue;
+
+/// Event bus for system-to-system communication.
+/// Systems emit broadcast events that UIs and other systems can subscribe to.
+pub mod events;
+
 // Extensibility - plugin interfaces for custom functionality
 
 /// Plugin interfaces for custom similarity providers and extensibility.
@@ -490,6 +500,7 @@ pub use data::{RelationStore, ScanState};
 pub use detector::{DetectorConfig, DuplicateDetector, PathFilter};
 pub use engine::EngineMode;
 pub use error::{DetectorError, DetectorResult};
+pub use events::{EventBus, SystemEvent};
 pub use query::Query;
 pub use relations::{
 	IdenticalHashes, RelationKey, RelationMetadata, SameFileName, SameSize, SimilarityGroups,

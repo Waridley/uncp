@@ -3,18 +3,19 @@
 use async_trait::async_trait;
 use blake3;
 use polars::prelude::*;
-use rayon::prelude::*;
 
 use crate::data::ScanState;
 use crate::error::{SystemError, SystemResult};
 use crate::memory::MemoryManager;
 use crate::systems::{System, SystemProgress, SystemRunner};
-use tracing::{info, trace, warn};
+use tracing::info;
 
 #[derive(Default)]
 pub struct ContentHashSystem {
 	pub scope_prefix: Option<String>,
 	pub callback: ProgressCb,
+	pub load_queue:
+		Option<std::sync::Arc<std::sync::Mutex<crate::content_queue::ContentLoadQueue>>>,
 }
 impl ContentHashSystem {
 	pub fn new() -> Self {
@@ -31,17 +32,20 @@ impl ContentHashSystem {
 		self.callback = Some(cb);
 		self
 	}
+	pub fn with_load_queue(
+		mut self,
+		queue: std::sync::Arc<std::sync::Mutex<crate::content_queue::ContentLoadQueue>>,
+	) -> Self {
+		self.load_queue = Some(queue);
+		self
+	}
 }
 
 pub type ProgressCb = Option<std::sync::Arc<dyn Fn(SystemProgress) + Send + Sync>>;
 
 #[async_trait]
 impl SystemRunner for ContentHashSystem {
-	async fn run(
-		&self,
-		state: &mut ScanState,
-		_memory_mgr: &mut MemoryManager,
-	) -> SystemResult<()> {
+	async fn run(&self, state: &mut ScanState, memory_mgr: &mut MemoryManager) -> SystemResult<()> {
 		// Get rows needing hashing
 		let to_hash_df = state
 			.files_needing_processing("content_hash")
@@ -160,72 +164,60 @@ impl SystemRunner for ContentHashSystem {
 				reason: e.to_string(),
 			})?
 			.clone();
-		let mut paths: Vec<String> = Vec::with_capacity(to_hash_df.height());
+		let mut ids: Vec<crate::paths::DirEntryId> = Vec::with_capacity(to_hash_df.height());
 		for i in 0..to_hash_df.height() {
 			if let (Some(idx), Some(r#gen)) = (idx_ca.get(i), gen_ca.get(i))
 				&& let Some(id) =
 					crate::paths::DirEntryId::from_raw_parts(idx as usize, r#gen as usize)
 			{
-				paths.push(id.to_string());
+				ids.push(id);
 			}
 		}
 
-		// Use rayon for parallel hashing with smol::unblock to bridge async/sync
-		let total_files = paths.len();
+		let total_files = ids.len();
 		let callback = self.callback.clone();
 
-		let results = smol::unblock(move || {
-			use std::sync::atomic::{AtomicUsize, Ordering};
-			let completed = AtomicUsize::new(0);
+		// Sequential cache-first hashing to avoid double-allocations and borrows across threads
+		let mut upd_paths: Vec<String> = Vec::with_capacity(total_files);
+		let mut upd_hashes: Vec<Option<String>> = Vec::with_capacity(total_files);
+		let mut upd_flags: Vec<bool> = Vec::with_capacity(total_files);
+		let mut processed = 0usize;
 
-			// Process files in parallel using rayon
-			let results: Vec<_> = paths
-				.par_iter()
-				.map(|path| {
-					let path_str = path.clone();
-					// Synchronous file reading and hashing for rayon
-					let result = match std::fs::read(path) {
-						Ok(bytes) => {
-							let digest = blake3::hash(&bytes);
-							let hash = digest.to_hex().to_string();
-							trace!("Hashed {}", path);
-							(path_str, Some(hash), true)
-						}
-						Err(_) => {
-							warn!("Hashing: failed to read {}", path);
-							(path_str, None, false)
-						}
-					};
-
-					// Update progress
-					let current = completed.fetch_add(1, Ordering::Relaxed) + 1;
-					if let Some(ref cb) = callback {
-						cb(SystemProgress {
-							system_name: "ContentHash".to_string(),
-							total_items: total_files,
-							processed_items: current,
-							current_item: Some(path.clone()),
-							estimated_remaining: None,
-						});
+		for id in ids.into_iter() {
+			let path_str = id.to_string();
+			let hash_opt = if let Some(ref queue) = self.load_queue {
+				// Prefer cache; if missing, enqueue and skip this cycle
+				match memory_mgr.get_file(&id.resolve()) {
+					Some(bytes) => Some(blake3::hash(&bytes.data).to_hex().to_string()),
+					None => {
+						let mut q = queue.lock().unwrap();
+						q.enqueue(id);
+						None
 					}
+				}
+			} else {
+				// Legacy fallback: read from disk directly
+				match std::fs::read(id.resolve()) {
+					Ok(bytes) => Some(blake3::hash(&bytes).to_hex().to_string()),
+					Err(_) => None,
+				}
+			};
 
-					result
-				})
-				.collect();
+			let current_item = path_str.clone();
+			upd_paths.push(path_str);
+			upd_hashes.push(hash_opt.clone());
+			upd_flags.push(hash_opt.is_some());
 
-			results
-		})
-		.await;
-
-		// Unpack results
-		let mut upd_paths = Vec::with_capacity(results.len());
-		let mut upd_hashes = Vec::with_capacity(results.len());
-		let mut upd_flags = Vec::with_capacity(results.len());
-
-		for (path, hash, flag) in results {
-			upd_paths.push(path);
-			upd_hashes.push(hash);
-			upd_flags.push(flag);
+			processed += 1;
+			if let Some(ref cb) = callback {
+				cb(SystemProgress {
+					system_name: "ContentHash".to_string(),
+					total_items: total_files,
+					processed_items: processed,
+					current_item: Some(current_item),
+					estimated_remaining: None,
+				});
+			}
 		}
 
 		if upd_paths.is_empty() {
@@ -327,7 +319,7 @@ impl SystemRunner for ContentHashSystem {
 		true
 	}
 	fn priority(&self) -> u8 {
-		200
+		0
 	}
 	fn name(&self) -> &'static str {
 		"ContentHash"

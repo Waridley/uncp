@@ -164,6 +164,7 @@ impl ScanState {
 			Series::new_empty("path".into(), &path_dtype).into(),
 			Series::new("size".into(), Vec::<u64>::new()).into(),
 			Series::new("modified".into(), Vec::<i64>::new()).into(), // Unix timestamp in nanoseconds
+			Series::new("discovered".into(), Vec::<i64>::new()).into(), // Discovery timestamp (UTC nanos)
 			Series::new("file_type".into(), Vec::<String>::new()).into(),
 			Series::new("content_loaded".into(), Vec::<bool>::new()).into(),
 			Series::new("hashed".into(), Vec::<bool>::new()).into(),
@@ -243,6 +244,7 @@ impl ScanState {
 		let file_types: Vec<String> = files.iter().map(|f| f.file_type.to_string()).collect();
 		let scan_ids: Vec<u32> = vec![self.scan_id; files.len()];
 		let now = Utc::now().timestamp_nanos_opt().unwrap_or(0);
+		let discovered: Vec<i64> = vec![now; files.len()];
 		let last_processed: Vec<i64> = vec![now; files.len()];
 
 		// Initialize processing flags to false
@@ -259,6 +261,7 @@ impl ScanState {
 			path_series.into(),
 			Series::new("size".into(), sizes).into(),
 			Series::new("modified".into(), modified).into(),
+			Series::new("discovered".into(), discovered).into(),
 			Series::new("file_type".into(), file_types).into(),
 			Series::new("content_loaded".into(), content_loaded).into(),
 			Series::new("hashed".into(), hashed).into(),

@@ -140,7 +140,21 @@ impl MemoryManager {
 		// Return reference to cached contents
 		Ok(self.file_cache.get(&path).unwrap())
 	}
+}
 
+impl MemoryManager {
+	/// Remove a file from cache if present. Returns true if removed.
+	pub fn remove_file(&mut self, path: &PathBuf) -> bool {
+		if let Some(bytes) = self.file_cache.pop(path) {
+			self.deallocate(bytes.len());
+			true
+		} else {
+			false
+		}
+	}
+}
+
+impl MemoryManager {
 	/// Get current memory usage
 	pub fn current_usage(&self) -> usize {
 		self.current_bytes.load(Ordering::Relaxed)
