@@ -81,7 +81,7 @@ pub enum EngineCommand {
 	/// Remove all path filters to process all discovered files
 	ClearPathFilter,
 	/// Dynamically register a new system to be picked up by the scheduler
-	RegisterSystem(Box<dyn crate::systems::SystemRunner + Send + Sync>),
+	RegisterSystem(std::sync::Arc<dyn crate::systems::SystemRunner>),
 }
 
 #[derive(Debug, Clone)]

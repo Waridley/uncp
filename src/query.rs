@@ -97,24 +97,24 @@ use crate::data::{RelationStore, ScanState};
 /// `Query` holds immutable references and is safe for concurrent access.
 /// Multiple queries can be created and used simultaneously without
 /// synchronization, making it ideal for parallel processing and UI updates.
-#[derive(Debug)]
-pub struct Query<'a> {
-	/// Immutable reference to the primary file metadata DataFrame
-	pub data: &'a DataFrame,
-	/// Immutable reference to the relationship store for duplicate analysis
-	pub relations: &'a RelationStore,
+#[derive(Debug, Clone)]
+pub struct Query {
+	pub state: std::sync::Arc<std::sync::RwLock<ScanState>>,
+	pub relations: std::sync::Arc<std::sync::RwLock<RelationStore>>,
 }
 
-impl<'a> Query<'a> {
-	pub fn new(state: &'a ScanState, relations: &'a RelationStore) -> Self {
-		Self {
-			data: &state.data,
-			relations,
-		}
+impl Query {
+	pub fn new(
+		state: std::sync::Arc<std::sync::RwLock<ScanState>>,
+		relations: std::sync::Arc<std::sync::RwLock<RelationStore>>,
+	) -> Self {
+		Self { state, relations }
 	}
 
 	pub fn files_by_type(&self, file_type: &str) -> PolarsResult<DataFrame> {
-		self.data
+		let state = self.state.read().unwrap();
+		state
+			.data
 			.clone()
 			.lazy()
 			.filter(col("file_type").eq(lit(file_type)))
@@ -122,7 +122,9 @@ impl<'a> Query<'a> {
 	}
 
 	pub fn files_needing_hashing(&self) -> PolarsResult<DataFrame> {
-		self.data
+		let state = self.state.read().unwrap();
+		state
+			.data
 			.clone()
 			.lazy()
 			.filter(col("hashed").eq(lit(false)))

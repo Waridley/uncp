@@ -356,26 +356,26 @@ impl FileDiscoverySystem {
 
 #[async_trait]
 impl SystemRunner for FileDiscoverySystem {
-	async fn run(
-		&self,
-		state: &mut ScanState,
-		_memory_mgr: &mut MemoryManager,
-	) -> SystemResult<()> {
+	async fn run(&self, pool: std::sync::Arc<crate::pool::DataPool>) -> SystemResult<()> {
 		let mut context = SystemContext::new();
 		if let Some(ref bus) = self.event_bus {
 			context = context.with_event_bus(bus.clone());
 		}
 		let files = self.discover_files(&context).await?;
 
-		state
-			.add_files(files)
-			.map_err(|e| SystemError::ExecutionFailed {
-				system: self.name().to_string(),
-				reason: format!("Failed to add files to state: {}", e),
-			})?;
-		// Enqueue discovered files for content loading if a queue is available
-		if let Some(ref queue) = self.load_queue {
-			self.enqueue_discovered(state, queue);
+		// Apply file additions under a short write lock
+		{
+			let mut state = pool.state.write().unwrap();
+			state
+				.add_files(files)
+				.map_err(|e| SystemError::ExecutionFailed {
+					system: self.name().to_string(),
+					reason: format!("Failed to add files to state: {}", e),
+				})?;
+			// Enqueue discovered files for content loading if a queue is available
+			if let Some(ref queue) = self.load_queue {
+				self.enqueue_discovered(&mut state, queue);
+			}
 		}
 		// Notify that core metadata columns are available
 		if let Some(ref bus) = self.event_bus {
@@ -393,37 +393,9 @@ impl SystemRunner for FileDiscoverySystem {
 		Ok(())
 	}
 
-	async fn run_with_cancellation(
-		&self,
-		state: &mut ScanState,
-		_memory_mgr: &mut MemoryManager,
-		cancellation_token: std::sync::Arc<std::sync::atomic::AtomicBool>,
-	) -> SystemResult<()> {
-		let context = SystemContext::new().with_cancellation_token(cancellation_token);
-		let files = self.discover_files(&context).await?;
+	
 
-		state
-			.add_files(files)
-			.map_err(|e| SystemError::ExecutionFailed {
-				system: self.name().to_string(),
-				reason: format!("Failed to add files to state: {}", e),
-			})?;
-
-		Ok(())
-	}
-
-	fn can_run(&self, _state: &ScanState) -> bool {
-		// File discovery can always run as it creates initial data
-		true
-	}
-
-	fn priority(&self) -> u8 {
-		255 // Highest priority - must run first
-	}
-
-	fn name(&self) -> &'static str {
-		"FileDiscovery"
-	}
+	fn name(&self) -> &'static str { "FileDiscovery" }
 }
 
 impl System for FileDiscoverySystem {

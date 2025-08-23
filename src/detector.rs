@@ -403,22 +403,12 @@ impl DetectorConfig {
 /// access, use the query interface which provides immutable views suitable
 /// for parallel processing.
 pub struct DuplicateDetector {
-	/// Primary data store containing all file metadata and processing state
-	pub state: ScanState,
-	/// Relationship store for duplicate and similarity data
-	pub relations: RelationStore,
+	/// Shared pool
+	pub pool: std::sync::Arc<crate::pool::DataPool>,
 	/// System scheduler for coordinating processing pipeline
 	pub scheduler: SystemScheduler,
-	/// Memory manager for resource optimization and limits
-	pub memory_mgr: MemoryManager,
-	/// Event bus for broadcast events across systems/UI
-	pub event_bus: std::sync::Arc<crate::events::EventBus>,
-	/// Central content store orchestrating ref-counted loads and releases
-	pub content_store: crate::content::ContentStore,
 	/// Configuration for behavior and performance tuning
 	pub config: DetectorConfig,
-	/// Pending load requests queue (global)
-	pub load_queue: std::sync::Arc<std::sync::Mutex<crate::content_queue::ContentLoadQueue>>,
 }
 
 impl DuplicateDetector {
@@ -426,56 +416,53 @@ impl DuplicateDetector {
 		let memory_settings = config.memory_settings.clone();
 		let event_bus = crate::events::EventBus::new();
 		let content_store = crate::content::ContentStore::new(event_bus.clone());
-		Ok(Self {
-			state: ScanState::new()?,
-			relations: RelationStore::new(),
-			scheduler: SystemScheduler::new(),
-			memory_mgr: MemoryManager::with_settings(memory_settings)?,
-			event_bus,
-			content_store,
-			config,
-			load_queue: crate::content_queue::ContentLoadQueue::new(),
-		})
+		let state = ScanState::new()?;
+		let relations = RelationStore::new();
+		let memory_mgr = MemoryManager::with_settings(memory_settings)?;
+		let load_queue = crate::content_queue::ContentLoadQueue::new();
+		let pool = std::sync::Arc::new(crate::pool::DataPool::new(state, relations, memory_mgr, event_bus.clone(), load_queue));
+		Ok(Self { pool, scheduler: SystemScheduler::new(), config })
 	}
 
 	/// Request that a file's contents be loaded (e.g., by a system). This queues a load and returns immediately.
-	pub async fn request_content_load(
-		&mut self,
-		id: crate::paths::DirEntryId,
-	) -> DetectorResult<()> {
-		// For now, directly acquire; later, this can go through a bounded queue with backpressure.
-		self.content_store.acquire(id, &mut self.memory_mgr).await
+	pub fn request_content_load(&self, id: crate::paths::DirEntryId) {
+		let bus = &self.pool.bus;
+		bus.emit(crate::events::SystemEvent::RequestContentLoad { path: id });
 	}
 
-	/// Install the content loader system so it runs before hashing.
+	/// Install the content loader system
 	pub fn install_content_loader(&mut self, max_per_run: usize) {
-		let loader = crate::systems::loader::ContentLoaderSystem::new(self.load_queue.clone())
-			.with_max_per_run(max_per_run);
-		self.scheduler.add_boxed_system(Box::new(loader));
+		let loader = crate::systems::loader::ContentLoaderSystem::new(self.pool.load_queue.clone())
+			.with_max_per_run(max_per_run)
+			.with_event_bus(self.pool.bus.clone());
+		self.scheduler.add_system(loader);
 	}
 
 	/// Install the request->queue adapter so systems can request loads via events.
 	pub fn install_request_adapter(&mut self) {
 		let adapter = crate::systems::event_adapter::RequestToQueueAdapter::new(
-			self.event_bus.clone(),
-			self.load_queue.clone(),
+			self.pool.bus.clone(),
+			self.pool.load_queue.clone(),
 		);
-		self.scheduler.add_boxed_system(Box::new(adapter));
+		self.scheduler.add_system(adapter);
 	}
 
 	/// Release a previously requested file's contents when no longer needed.
-	pub fn release_content(&mut self, id: crate::paths::DirEntryId) {
-		self.content_store.release(id, &mut self.memory_mgr)
+	pub fn release_content(&self, id: crate::paths::DirEntryId) {
+		// With the new pool-based approach, release is handled by MemoryManager eviction policies.
+		let _ = id;
 	}
 
 	pub fn new_with_cache(config: DetectorConfig) -> DetectorResult<Self> {
-		let mut this = Self::new(config)?;
+		let this = Self::new(config)?;
 		// Try loading cache on creation (best-effort)
 		if let Some(dir) = default_cache_dir()
 			&& let Ok(Some((state, relations))) = CacheManager::new(dir).load_all()
 		{
-			this.state = state;
-			this.relations = relations;
+			let mut state_guard = this.pool.state.write().unwrap();
+			*state_guard = state;
+			let mut rel_guard = this.pool.relations.write().unwrap();
+			*rel_guard = relations;
 			info!("Detector: loaded cache at init");
 		}
 		Ok(this)
@@ -487,8 +474,8 @@ impl DuplicateDetector {
 		let mut this = Self::new(config)?;
 		// Try loading cache from specified directory (best-effort)
 		if let Ok(Some((state, relations))) = CacheManager::new(cache_dir).load_all() {
-			this.state = state;
-			this.relations = relations;
+			this.pool.state = std::sync::Arc::new(std::sync::RwLock::new(state));
+			this.pool.relations = std::sync::Arc::new(std::sync::RwLock::new(relations));
 		}
 		Ok(this)
 	}
@@ -496,28 +483,16 @@ impl DuplicateDetector {
 	pub async fn scan_directory(&mut self, path: PathBuf) -> DetectorResult<()> {
 		info!("Detector: scan_directory {}", path.display());
 		let mut discovery = FileDiscoverySystem::new(vec![path])
-			.with_event_bus(self.event_bus.clone())
-			.with_load_queue(self.load_queue.clone());
-		if self.config.path_filter.has_patterns() {
-			discovery = discovery.with_path_filter(self.config.path_filter.clone());
-		}
+			.with_event_bus(self.pool.bus.clone())
+			.with_load_queue(self.pool.load_queue.clone());
+		if self.config.path_filter.has_patterns() { discovery = discovery.with_path_filter(self.config.path_filter.clone()); }
 		self.scheduler.add_system(discovery);
 		// Ensure content loader and request adapter are installed so content begins loading
 		self.install_request_adapter();
 		self.install_content_loader(512);
-
-		let res = self
-			.scheduler
-			.run_all(&mut self.state, &mut self.memory_mgr)
-			.await
-			.map_err(DetectorError::from);
-		if res.is_ok()
-			&& !self.config.disable_auto_cache
-			&& let Some(dir) = default_cache_dir()
-		{
-			let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
-		}
-		res
+		// Spawn all systems
+		self.scheduler.run_all(self.pool.clone()).await?;
+		Ok(())
 	}
 
 	pub async fn scan_with_progress(
@@ -525,98 +500,56 @@ impl DuplicateDetector {
 		path: PathBuf,
 		progress: std::sync::Arc<dyn Fn(crate::systems::SystemProgress) + Send + Sync>,
 	) -> DetectorResult<()> {
-		info!(
-			"Detector: scan_directory {} (with progress)",
-			path.display()
-		);
+		info!("Detector: scan_directory {} (with progress)", path.display());
 		let mut discovery = FileDiscoverySystem::new(vec![path])
 			.with_progress_callback(progress)
-			.with_event_bus(self.event_bus.clone())
-			.with_load_queue(self.load_queue.clone());
-		if self.config.path_filter.has_patterns() {
-			discovery = discovery.with_path_filter(self.config.path_filter.clone());
-		}
+			.with_event_bus(self.pool.bus.clone())
+			.with_load_queue(self.pool.load_queue.clone());
+		if self.config.path_filter.has_patterns() { discovery = discovery.with_path_filter(self.config.path_filter.clone()); }
 		// Ensure content loader and request adapter are installed so content begins loading
 		self.install_request_adapter();
 		self.install_content_loader(512);
-
 		self.scheduler.add_system(discovery);
-
-		let res = self
-			.scheduler
-			.run_all(&mut self.state, &mut self.memory_mgr)
-			.await
-			.map_err(DetectorError::from);
-		if res.is_ok()
-			&& !self.config.disable_auto_cache
-			&& let Some(dir) = default_cache_dir()
-		{
-			let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
-		}
-		res
+		self.scheduler.run_all(self.pool.clone()).await?;
+		Ok(())
 	}
 
 	pub async fn scan_with_progress_and_cancellation(
 		&mut self,
 		path: PathBuf,
 		progress: std::sync::Arc<dyn Fn(crate::systems::SystemProgress) + Send + Sync>,
-		cancellation_token: std::sync::Arc<std::sync::atomic::AtomicBool>,
+		_cancellation_token: std::sync::Arc<std::sync::atomic::AtomicBool>,
 	) -> DetectorResult<()> {
-		info!(
-			"Detector: scan_directory {} (with progress and cancellation)",
-			path.display()
-		);
+		info!("Detector: scan_directory {} (with progress and cancellation)", path.display());
 		let mut discovery = FileDiscoverySystem::new(vec![path])
 			.with_progress_callback(progress)
-			.with_event_bus(self.event_bus.clone())
-			.with_load_queue(self.load_queue.clone());
-		if self.config.path_filter.has_patterns() {
-			discovery = discovery.with_path_filter(self.config.path_filter.clone());
-		}
+			.with_event_bus(self.pool.bus.clone())
+			.with_load_queue(self.pool.load_queue.clone());
+		if self.config.path_filter.has_patterns() { discovery = discovery.with_path_filter(self.config.path_filter.clone()); }
 		// Ensure content loader and request adapter are installed so content begins loading
 		self.install_request_adapter();
 		self.install_content_loader(512);
-
 		self.scheduler.add_system(discovery);
-		let res = self
-			.scheduler
-			.run_all_with_cancellation(&mut self.state, &mut self.memory_mgr, cancellation_token)
-			.await
-			.map_err(DetectorError::from);
-		if res.is_ok()
-			&& !self.config.disable_auto_cache
-			&& let Some(dir) = default_cache_dir()
-		{
-			let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
-		}
-		res
+		self.scheduler.run_all(self.pool.clone()).await?;
+		Ok(())
 	}
 
 	pub async fn scan_and_hash(&mut self, path: PathBuf) -> DetectorResult<()> {
 		info!("Detector: scan_and_hash {}", path.display());
 		// Run discovery first
 		let discovery = FileDiscoverySystem::new(vec![path.clone()])
-			.with_event_bus(self.event_bus.clone())
-			.with_load_queue(self.load_queue.clone());
+			.with_event_bus(self.pool.bus.clone())
+			.with_load_queue(self.pool.load_queue.clone());
 		self.scheduler.add_system(discovery);
-		// Then hashing (scoped to requested path); provide queue
+		// Then hashing (scoped to requested path); provide queue and bus
 		self.scheduler.add_system(
 			ContentHashSystem::new()
 				.with_scope_prefix(path.to_string_lossy())
-				.with_load_queue(self.load_queue.clone()),
+				.with_load_queue(self.pool.load_queue.clone())
+				.with_event_bus(self.pool.bus.clone()),
 		);
-		let res = self
-			.scheduler
-			.run_all(&mut self.state, &mut self.memory_mgr)
-			.await
-			.map_err(DetectorError::from);
-		if res.is_ok()
-			&& !self.config.disable_auto_cache
-			&& let Some(dir) = default_cache_dir()
-		{
-			let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
-		}
-		res
+		self.scheduler.run_all(self.pool.clone()).await?;
+		Ok(())
 	}
 	pub async fn process_until_complete_with_progress(
 		&mut self,
@@ -626,32 +559,26 @@ impl DuplicateDetector {
 		if let Some(p) = path.clone() {
 			let discovery = FileDiscoverySystem::new(vec![p.clone()])
 				.with_progress_callback(progress.clone())
-				.with_load_queue(self.load_queue.clone());
+				.with_load_queue(self.pool.load_queue.clone())
+				.with_event_bus(self.pool.bus.clone());
 			self.scheduler.add_system(discovery);
 		}
-		self.scheduler
-			.add_system(ContentHashSystem::new().with_load_queue(self.load_queue.clone()));
+		self.scheduler.add_system(
+			ContentHashSystem::new()
+				.with_load_queue(self.pool.load_queue.clone())
+				.with_event_bus(self.pool.bus.clone()),
+		);
 		// Ensure content loader and request adapter are installed so content begins loading
 		self.install_request_adapter();
 		self.install_content_loader(512);
-		let res = self
-			.scheduler
-			.run_all(&mut self.state, &mut self.memory_mgr)
-			.await
-			.map_err(DetectorError::from);
-		if res.is_ok()
-			&& !self.config.disable_auto_cache
-			&& let Some(dir) = default_cache_dir()
-		{
-			let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
-		}
-		res
+		self.scheduler.run_all(self.pool.clone()).await?;
+		Ok(())
 	}
 
 	/// Convenience: enqueue all discovered files after a scan
 	pub fn enqueue_all_discovered(&self) {
-		let queue = self.load_queue.clone();
-		let state = &self.state;
+		let queue = self.pool.load_queue.clone();
+		let state = self.pool.state.read().unwrap();
 		if let Ok(path_col) = state.data.column("path")
 			&& let Ok(pstruct) = path_col.struct_()
 			&& let Ok(idx_series) = pstruct.field_by_name("idx")
@@ -673,22 +600,14 @@ impl DuplicateDetector {
 	}
 
 	pub async fn process_until_complete(&mut self) -> DetectorResult<()> {
-		let res = self
-			.scheduler
-			.run_all(&mut self.state, &mut self.memory_mgr)
-			.await
-			.map_err(DetectorError::from);
-		if res.is_ok()
-			&& !self.config.disable_auto_cache
-			&& let Some(dir) = default_cache_dir()
-		{
-			let _ = CacheManager::new(dir).save_all(&self.state, &self.relations);
-		}
-		res
+		self.scheduler.run_all(self.pool.clone()).await?;
+		Ok(())
 	}
 
 	pub fn save_cache_all(&self, dir: PathBuf) -> DetectorResult<()> {
-		CacheManager::new(dir).save_all(&self.state, &self.relations)?;
+		let state = self.pool.state.read().unwrap();
+		let relations = self.pool.relations.read().unwrap();
+		CacheManager::new(dir).save_all(&state, &relations)?;
 		Ok(())
 	}
 
@@ -702,47 +621,52 @@ impl DuplicateDetector {
 
 	pub fn load_cache_all(&mut self, dir: PathBuf) -> DetectorResult<bool> {
 		if let Some((state, relations)) = CacheManager::new(dir).load_all()? {
-			self.state = state;
-			self.relations = relations;
+			{
+				let mut state_guard = self.pool.state.write().unwrap();
+				*state_guard = state;
+			}
+			{
+				let mut rel_guard = self.pool.relations.write().unwrap();
+				*rel_guard = relations;
+			}
 			return Ok(true);
 		}
 		Ok(false)
 	}
 
-	pub fn query(&self) -> Query<'_> {
-		Query::new(&self.state, &self.relations)
+	pub fn query(&self) -> Query {
+		Query::new(self.pool.state.clone(), self.pool.relations.clone())
 	}
 
 	/// Clear all detector state (files, relations, etc.) for a fresh start
 	pub fn clear_state(&mut self) {
 		info!("Detector: clearing all state");
-		self.state = ScanState::new().expect("Failed to create new ScanState");
-		self.relations = RelationStore::new();
-		// Clear any pending systems in the scheduler
+		{
+			let mut state_guard = self.pool.state.write().unwrap();
+			*state_guard = ScanState::new().expect("Failed to create new ScanState");
+		}
+		{
+			let mut rel_guard = self.pool.relations.write().unwrap();
+			*rel_guard = RelationStore::new();
+		}
 		self.scheduler = SystemScheduler::new();
 	}
 
+
 	// Disk caching stubs for now
 
-	pub fn total_files(&self) -> usize {
-		self.state.data.height()
-	}
+	pub fn total_files(&self) -> usize { self.pool.state.read().unwrap().data.height() }
 	pub fn files_pending_hash(&self) -> usize {
-		self.state
-			.data
-			.column("hashed")
-			.ok()
-			.and_then(|s| s.bool().ok())
-			.map(|b| b.into_iter().filter(|v| matches!(v, Some(false))).count())
-			.unwrap_or(0)
+		let state = self.pool.state.read().unwrap();
+		state.data.column("hashed").ok().and_then(|s| s.bool().ok()).map(|b| b.into_iter().filter(|v| matches!(v, Some(false))).count()).unwrap_or(0)
 	}
 
 	pub fn files_pending_hash_under_prefix<S: AsRef<str>>(&self, prefix: S) -> usize {
+		let state = self.pool.state.read().unwrap();
+		let df = &state.data;
+
 		let pref = prefix.as_ref();
-		let df = &self.state.data;
-		if df.height() == 0 {
-			return 0;
-		}
+		if df.height() == 0 { return 0; }
 		let s = match df.column("path").and_then(|c| c.struct_()) {
 			Ok(s) => s,
 			Err(_) => return 0,
@@ -784,14 +708,11 @@ impl DuplicateDetector {
 
 	pub fn files_under_prefix<S: AsRef<str>>(&self, prefix: S) -> usize {
 		let pref = prefix.as_ref();
-		let df = &self.state.data;
-		if df.height() == 0 {
-			return 0;
-		}
-		let s = match df.column("path").and_then(|c| c.struct_()) {
-			Ok(s) => s,
-			Err(_) => return 0,
-		};
+		let df_guard = self.pool.state.read().unwrap();
+		let df = &df_guard.data;
+		if df.height() == 0 { return 0; }
+		let s = match df.column("path").and_then(|c| c.struct_()) { Ok(s) => s, Err(_) => return 0 };
+
 		let idx_series = match s.field_by_name("idx") {
 			Ok(series) => series.clone(),
 			Err(_) => return 0,
@@ -830,15 +751,12 @@ impl DuplicateDetector {
 		let pref = prefix.as_ref();
 
 		// Extract columns directly and filter by actual path descendant relationship
-		let df = &self.state.data;
+		let df_guard = self.pool.state.read().unwrap();
+		let df = &df_guard.data;
 		let mut files = Vec::new();
-		if df.height() == 0 {
-			return files;
-		}
-		let paths = match df.column("path").and_then(|c| c.struct_()) {
-			Ok(s) => s,
-			Err(_) => return files,
-		};
+		if df.height() == 0 { return files; }
+		let paths = match df.column("path").and_then(|c| c.struct_()) { Ok(s) => s, Err(_) => return files };
+
 		let idx_series = match paths.field_by_name("idx") {
 			Ok(series) => series.clone(),
 			Err(_) => return files,
@@ -884,10 +802,8 @@ impl DuplicateDetector {
 		let mut files_invalidated = 0;
 
 		// Get all cached files with their metadata
-		let df = self.state.data.clone();
-		if df.height() == 0 {
-			return Ok((0, 0));
-		}
+		let df = self.pool.state.read().unwrap().data.clone();
+		if df.height() == 0 { return Ok((0, 0)); }
 
 		// Build a mask for files that should be kept
 		let mut keep_mask = Vec::new();
@@ -895,98 +811,52 @@ impl DuplicateDetector {
 
 		// Extract columns
 		let paths = df.column("path")?.str()?;
-		let cached_sizes = df.column("size")?.u64()?; // size is u64 in schema
-		let cached_mtimes = df.column("modified")?.i64()?; // column name is "modified", not "modified_time"
+		let cached_sizes = df.column("size")?.u64()?;
+		let cached_mtimes = df.column("modified")?.i64()?;
 		let hashed_flags = df.column("hashed")?.bool()?;
 
-		for (((path_opt, cached_size_opt), cached_mtime_opt), hashed_opt) in paths
-			.into_iter()
-			.zip(cached_sizes.into_iter())
-			.zip(cached_mtimes.into_iter())
-			.zip(hashed_flags.into_iter())
-		{
-			if let (Some(path_str), Some(cached_size), Some(cached_mtime), Some(is_hashed)) =
-				(path_opt, cached_size_opt, cached_mtime_opt, hashed_opt)
-			{
+		for (((path_opt, cached_size_opt), cached_mtime_opt), hashed_opt) in paths.into_iter().zip(cached_sizes.into_iter()).zip(cached_mtimes.into_iter()).zip(hashed_flags.into_iter()) {
+			if let (Some(path_str), Some(cached_size), Some(cached_mtime), Some(is_hashed)) = (path_opt, cached_size_opt, cached_mtime_opt, hashed_opt) {
 				let path = Path::new(path_str);
-
-				// Check if file still exists
 				match fs::metadata(path) {
 					Ok(metadata) => {
-						let current_size = metadata.len(); // Keep as u64 to match schema
-
-						// Use the same timestamp conversion as discovery system for consistency
+						let current_size = metadata.len();
 						let current_mtime = match metadata.modified() {
-							Ok(system_time) => {
-								let datetime = chrono::DateTime::<chrono::Utc>::from(system_time);
-								datetime.timestamp_nanos_opt().unwrap_or(0)
-							}
-							Err(_) => 0, // Default to epoch if timestamp unavailable
+							Ok(system_time) => chrono::DateTime::<chrono::Utc>::from(system_time).timestamp_nanos_opt().unwrap_or(0),
+							Err(_) => 0,
 						};
-
-						// Keep the file
 						keep_mask.push(true);
-
-						// Check if file has been modified
 						if current_size != cached_size || current_mtime != cached_mtime {
-							// File modified, mark for re-processing
 							invalidate_mask.push(true);
-							if is_hashed {
-								files_invalidated += 1;
-							}
+							if is_hashed { files_invalidated += 1; }
 						} else {
-							// File unchanged
 							invalidate_mask.push(false);
 						}
 					}
-					Err(_) => {
-						// File no longer exists, remove it
-						keep_mask.push(false);
-						invalidate_mask.push(false);
-						files_removed += 1;
-					}
+					Err(_) => { keep_mask.push(false); invalidate_mask.push(false); files_removed += 1; }
 				}
-			} else {
-				// Invalid row, remove it
-				keep_mask.push(false);
-				invalidate_mask.push(false);
-			}
+			} else { keep_mask.push(false); invalidate_mask.push(false); }
 		}
 
-		// Apply both masks in a single operation to avoid length mismatches
+		// Apply both masks
 		if keep_mask.iter().any(|&x| !x) || invalidate_mask.iter().any(|&x| x) {
 			let keep_series = Series::new("keep".into(), keep_mask.clone());
 			let invalidate_series = Series::new("invalidate".into(), invalidate_mask.clone());
-
-			self.state.data = self
-				.state
-				.data
-				.clone()
-				.lazy()
-				// First apply invalidation to mark files for re-hashing
-				.with_columns([when(lit(invalidate_series))
-					.then(lit(false))
-					.otherwise(col("hashed"))
-					.alias("hashed")])
-				// Then filter out deleted files
+			let mut state_guard = self.pool.state.write().unwrap();
+			state_guard.data = state_guard.data.clone().lazy()
+				.with_columns([when(lit(invalidate_series)).then(lit(false)).otherwise(col("hashed")).alias("hashed")])
 				.filter(lit(keep_series))
 				.collect()?;
 		}
 
-		info!(
-			"Cache validation: {} files removed, {} files marked for re-processing",
-			files_removed, files_invalidated
-		);
+		info!("Cache validation: {} files removed, {} files marked for re-processing", files_removed, files_invalidated);
 		Ok((files_removed, files_invalidated))
 	}
 	pub fn files_by_type_counts(&self) -> std::collections::HashMap<String, usize> {
 		let mut map = std::collections::HashMap::new();
-		if let Ok(s) = self.state.data.column("file_type")
-			&& let Ok(utf8) = s.str()
-		{
-			for v in utf8.into_iter().flatten() {
-				*map.entry(v.to_string()).or_insert(0) += 1;
-			}
+		let state = self.pool.state.read().unwrap();
+		if let Ok(s) = state.data.column("file_type") && let Ok(utf8) = s.str() {
+			for v in utf8.into_iter().flatten() { *map.entry(v.to_string()).or_insert(0) += 1; }
 		}
 		map
 	}
@@ -1035,7 +905,7 @@ mod tests {
 
 		let detector = detector.unwrap();
 		// Note: detector might have default scan_id of 1, so we just check it's created
-		assert!(detector.state.scan_id >= 1);
+		assert!(detector.pool.state.read().unwrap().scan_id >= 1);
 
 		// Test that the config is properly set to disable auto cache
 		assert!(detector.config.disable_auto_cache);
@@ -1055,7 +925,7 @@ mod tests {
 
 		let detector = detector.unwrap();
 		assert!(detector.config.disable_auto_cache);
-		assert_eq!(detector.state.data.height(), 0);
+		assert_eq!(detector.pool.state.read().unwrap().data.height(), 0);
 	}
 
 	#[test_log::test]

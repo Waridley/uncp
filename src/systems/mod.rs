@@ -1,10 +1,11 @@
 //! Processing systems for the duplicate detection pipeline
 
 use async_trait::async_trait;
+use std::sync::Arc;
 
-use crate::data::ScanState;
 use crate::error::SystemResult;
-use crate::memory::MemoryManager;
+use crate::events::DataFrameId;
+use crate::pool::DataPool;
 
 pub mod discovery;
 pub mod event_adapter;
@@ -19,42 +20,29 @@ pub use scheduler::SystemScheduler;
 /// Common interface for all processing systems
 #[async_trait]
 pub trait SystemRunner: Send + Sync {
-	/// Run the system on the current state
-	async fn run(&self, state: &mut ScanState, memory_mgr: &mut MemoryManager) -> SystemResult<()>;
-
-	/// Run the system with cancellation support
-	async fn run_with_cancellation(
-		&self,
-		state: &mut ScanState,
-		memory_mgr: &mut MemoryManager,
-		_cancellation_token: std::sync::Arc<std::sync::atomic::AtomicBool>,
-	) -> SystemResult<()> {
-		// Default implementation just calls run() - systems can override for cancellation support
-		self.run(state, memory_mgr).await
-	}
-
-	/// Check if this system can run (dependencies met)
-	fn can_run(&self, state: &ScanState) -> bool;
-
-	/// Hint if there is work to do; default defers to can_run
-	fn has_work(&self, state: &ScanState) -> bool {
-		self.can_run(state)
-	}
-
-	/// System priority (higher number = higher priority)
-	fn priority(&self) -> u8;
+	/// Run the system as a long-lived task until pool.running is false
+	async fn run(&self, pool: Arc<DataPool>) -> SystemResult<()>;
 
 	/// System name for logging and identification
 	fn name(&self) -> &'static str;
 }
 
-/// System metadata interface
+/// System metadata interface and interest declaration
 pub trait System {
 	/// Columns required by this system
 	fn required_columns(&self) -> &[&'static str];
 
 	/// Columns optionally used by this system
 	fn optional_columns(&self) -> &[&'static str];
+
+	/// Frames this system is interested in observing
+	fn interested_frames(&self) -> &[DataFrameId] { &[] }
+
+	/// Columns this system is interested in observing
+	fn interested_columns(&self) -> &[&'static str] { &[] }
+
+	/// Whether this system frequently needs file contents
+	fn needs_content(&self) -> bool { false }
 
 	/// System description
 	fn description(&self) -> &'static str;

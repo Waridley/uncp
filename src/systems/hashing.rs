@@ -16,6 +16,7 @@ pub struct ContentHashSystem {
 	pub callback: ProgressCb,
 	pub load_queue:
 		Option<std::sync::Arc<std::sync::Mutex<crate::content_queue::ContentLoadQueue>>>,
+	pub event_bus: Option<std::sync::Arc<crate::events::EventBus>>,
 }
 impl ContentHashSystem {
 	pub fn new() -> Self {
@@ -39,13 +40,26 @@ impl ContentHashSystem {
 		self.load_queue = Some(queue);
 		self
 	}
-}
+
+	pub fn with_event_bus(
+		mut self,
+		bus: std::sync::Arc<crate::events::EventBus>,
+	) -> Self {
+		self.event_bus = Some(bus);
+		self
+	}
+	}
 
 pub type ProgressCb = Option<std::sync::Arc<dyn Fn(SystemProgress) + Send + Sync>>;
 
 #[async_trait]
 impl SystemRunner for ContentHashSystem {
-	async fn run(&self, state: &mut ScanState, memory_mgr: &mut MemoryManager) -> SystemResult<()> {
+	async fn run(&self, pool: std::sync::Arc<crate::pool::DataPool>) -> SystemResult<()> {
+		// Transition phase: keep one-pass behavior for now under short locks
+		let mut state_guard = pool.state.write().unwrap();
+		let state = &mut *state_guard;
+		let mut memory_guard = pool.memory.write().unwrap();
+		let memory_mgr = &mut *memory_guard;
 		// Get rows needing hashing
 		let to_hash_df = state
 			.files_needing_processing("content_hash")
@@ -315,15 +329,7 @@ impl SystemRunner for ContentHashSystem {
 		Ok(())
 	}
 
-	fn can_run(&self, _state: &ScanState) -> bool {
-		true
-	}
-	fn priority(&self) -> u8 {
-		0
-	}
-	fn name(&self) -> &'static str {
-		"ContentHash"
-	}
+	fn name(&self) -> &'static str { "ContentHash" }
 }
 
 impl System for ContentHashSystem {

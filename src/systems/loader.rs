@@ -40,134 +40,50 @@ impl ContentLoaderSystem {
 
 #[async_trait]
 impl SystemRunner for ContentLoaderSystem {
-	async fn run(&self, state: &mut ScanState, memory_mgr: &mut MemoryManager) -> SystemResult<()> {
-		// Drain bus requests first (non-blocking)
-		if let Some(ref bus) = self.event_bus {
-			// We can't drain directly from EventBus; instead, consumers should enqueue into the queue when requesting loads.
-			// Keep this placeholder in case we later extend EventBus with a shared stream.
-			let _ = bus; // suppress unused warning for now
-		}
-
-		// Snapshot current queue
-		let snapshot: Vec<DirEntryId> = {
-			let q = self.queue.lock().unwrap();
-			q.snapshot()
-		};
-		if snapshot.is_empty() {
-			return Ok(());
-		}
-
-		// Prioritize large files first: sort by size desc using DataFrame lookup
-		// Build a map DirEntryId -> size from state.data
-		let mut items = snapshot;
-		let sizes = match state.data.column("size") {
-			Ok(col) => col.u64().map_err(|e| SystemError::ExecutionFailed {
-				system: self.name().into(),
-				reason: e.to_string(),
-			})?,
-			Err(e) => {
-				return Err(SystemError::ExecutionFailed {
-					system: self.name().into(),
-					reason: e.to_string(),
-				});
+	async fn run(&self, pool: std::sync::Arc<crate::pool::DataPool>) -> SystemResult<()> {
+		loop {
+			if !pool.is_running() { break; }
+			// Snapshot current queue
+			let snapshot: Vec<DirEntryId> = { let q = self.queue.lock().unwrap(); q.snapshot() };
+			if snapshot.is_empty() { smol::future::yield_now().await; continue; }
+			// Build size map under read lock
+			let (mut items, size_by_key): (Vec<DirEntryId>, std::collections::HashMap<(usize,usize), u64>) = {
+				let state = pool.state.read().unwrap();
+				let mut items = snapshot;
+				let sizes = state.data.column("size").and_then(|c| c.u64()).map_err(|e| SystemError::ExecutionFailed { system: self.name().into(), reason: e.to_string() })?.clone();
+				let path_struct = state.data.column("path").and_then(|c| c.struct_()).map_err(|e| SystemError::ExecutionFailed { system: self.name().into(), reason: e.to_string() })?;
+				let idx_series = path_struct.field_by_name("idx").map_err(|e| SystemError::ExecutionFailed { system: self.name().into(), reason: e.to_string() })?.clone();
+				let gen_series = path_struct.field_by_name("gen").map_err(|e| SystemError::ExecutionFailed { system: self.name().into(), reason: e.to_string() })?.clone();
+				let idx_ca = idx_series.u64().map_err(|e| SystemError::ExecutionFailed { system: self.name().into(), reason: e.to_string() })?.clone();
+				let gen_ca = gen_series.u64().map_err(|e| SystemError::ExecutionFailed { system: self.name().into(), reason: e.to_string() })?.clone();
+				let mut size_by_key = std::collections::HashMap::with_capacity(state.data.height());
+				for i in 0..state.data.height() { if let (Some(idx), Some(r#gen), Some(sz)) = (idx_ca.get(i), gen_ca.get(i), sizes.get(i)) { size_by_key.insert((idx as usize, r#gen as usize), sz); } }
+				(items, size_by_key)
+			};
+			items.sort_by_key(|id| std::cmp::Reverse(size_by_key.get(&id.raw_parts()).copied().unwrap_or(0)));
+			// Attempt loads up to max_per_run
+			let mut loaded = 0usize;
+			for id in items.into_iter().take(self.max_per_run) {
+				let expected = size_by_key.get(&id.raw_parts()).copied().unwrap_or(0) as usize;
+				// Read file bytes without holding the memory lock
+				let bytes = match smol::fs::read(id.resolve()).await {
+					Ok(b) => b,
+					Err(e) => { warn!(?e, "ContentLoader: failed to read content"); continue; }
+				};
+				// Now put into cache under a short write lock
+				let mut mem = pool.memory.write().unwrap();
+				let load_ok = match mem.put_file(id.resolve(), crate::memory::FileBytes::new(bytes)) {
+					Ok(_) => true,
+					Err(e) => { warn!(?e, "ContentLoader: cache put failed"); false }
+				};
+				if load_ok { if let Some(ref bus) = self.event_bus { bus.emit(SystemEvent::ContentLoaded { path: id }); } let mut q = self.queue.lock().unwrap(); q.remove(&id); loaded += 1; }
 			}
-		};
-		let path_struct = state
-			.data
-			.column("path")
-			.and_then(|c| c.struct_())
-			.map_err(|e| SystemError::ExecutionFailed {
-				system: self.name().into(),
-				reason: e.to_string(),
-			})?;
-		let idx_series =
-			path_struct
-				.field_by_name("idx")
-				.map_err(|e| SystemError::ExecutionFailed {
-					system: self.name().into(),
-					reason: e.to_string(),
-				})?;
-		let idx_ca = idx_series
-			.u64()
-			.map_err(|e| SystemError::ExecutionFailed {
-				system: self.name().into(),
-				reason: e.to_string(),
-			})?
-			.clone();
-		let gen_series =
-			path_struct
-				.field_by_name("gen")
-				.map_err(|e| SystemError::ExecutionFailed {
-					system: self.name().into(),
-					reason: e.to_string(),
-				})?;
-		let gen_ca = gen_series
-			.u64()
-			.map_err(|e| SystemError::ExecutionFailed {
-				system: self.name().into(),
-				reason: e.to_string(),
-			})?
-			.clone();
-
-		let mut size_by_key = std::collections::HashMap::with_capacity(state.data.height());
-		for i in 0..state.data.height() {
-			if let (Some(idx), Some(r#gen), Some(sz)) = (idx_ca.get(i), gen_ca.get(i), sizes.get(i))
-			{
-				size_by_key.insert((idx as usize, r#gen as usize), sz);
-			}
-		}
-
-		items.sort_by_key(|id| {
-			std::cmp::Reverse(size_by_key.get(&id.raw_parts()).copied().unwrap_or(0))
-		});
-
-		// Attempt loads up to max_per_run
-		let mut loaded = 0usize;
-		for id in items.into_iter().take(self.max_per_run) {
-			// Try to allocate the expected bytes based on size column to short-circuit if necessary
-			let expected = size_by_key.get(&id.raw_parts()).copied().unwrap_or(0) as usize;
-			if expected > 0 && !memory_mgr.can_allocate(expected) {
-				// Try evicting/allocating through try_allocate; if fails, stop loading further
-				if memory_mgr.try_allocate(expected).is_err() {
-					debug!("ContentLoader: memory pressure, deferring further loads");
-					break;
-				}
-				// If succeeded via try_allocate, immediately deallocate to not double count; load_file will count real size
-				memory_mgr.deallocate(expected);
-			}
-
-			// Load the file into memory
-			match memory_mgr.load_file(id.resolve()).await {
-				Ok(_) => {
-					if let Some(ref bus) = self.event_bus {
-						bus.emit(SystemEvent::ContentLoaded { path: id });
-					}
-					// Remove from queue after success
-					let mut q = self.queue.lock().unwrap();
-					q.remove(&id);
-					loaded += 1;
-				}
-				Err(e) => {
-					warn!(?e, "ContentLoader: failed to load content");
-				}
-			}
-		}
-
-		if loaded > 0 {
-			info!("ContentLoader: loaded {} items", loaded);
+			if loaded > 0 { info!("ContentLoader: loaded {} items", loaded); }
+			smol::future::yield_now().await;
 		}
 		Ok(())
 	}
-
-	fn can_run(&self, _state: &ScanState) -> bool {
-		true
-	}
-	fn priority(&self) -> u8 {
-		0
-	}
-	fn name(&self) -> &'static str {
-		"ContentLoader"
-	}
+	fn name(&self) -> &'static str { "ContentLoader" }
 }
 
 impl System for ContentLoaderSystem {
