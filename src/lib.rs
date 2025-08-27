@@ -500,6 +500,7 @@ pub mod events;
 /// maintaining flexibility for runtime plugin loading in future versions.
 pub mod similarity;
 
+use tracing_subscriber::EnvFilter;
 // Re-export main API types for convenient access
 pub use data::{RelationStore, ScanState};
 pub use detector::{DetectorConfig, DuplicateDetector, PathFilter};
@@ -507,10 +508,16 @@ pub use engine::EngineMode;
 pub use error::{DetectorError, DetectorResult};
 
 pub mod log_ui;
-pub use log_ui::{UiErrorEvent, UiErrorQueueHandle, install_ui_error_layer};
+pub use log_ui::{UiLogEvent, UiLogQueueHandle, install_ui_log_layer};
 
 pub use events::{EventBus, SystemEvent};
 pub use query::Query;
 pub use relations::{
 	IdenticalHashes, RelationKey, RelationMetadata, SameFileName, SameSize, SimilarityGroups,
 };
+
+pub fn log_env_filter() -> EnvFilter {
+	EnvFilter::try_from_env("UNCP_LOG")
+		.or_else(|_| EnvFilter::try_from_default_env())
+		.unwrap_or_else(|_| EnvFilter::new("info"))
+}

@@ -96,7 +96,9 @@ impl std::fmt::Debug for EngineCommand {
 			EngineCommand::LoadCache(p) => write!(f, "LoadCache({p:?})"),
 			EngineCommand::SetPathFilter(p) => write!(f, "SetPathFilter({p:?})"),
 			EngineCommand::ClearPathFilter => write!(f, "ClearPathFilter"),
-			EngineCommand::RegisterSystem(runner) => write!(f, "RegisterSystem({:?})", runner.name()),
+			EngineCommand::RegisterSystem(runner) => {
+				write!(f, "RegisterSystem({:?})", runner.name())
+			}
 		}
 	}
 }
@@ -229,7 +231,7 @@ impl BackgroundEngine {
 	) {
 		let (cmd_tx, cmd_rx) = channel::unbounded::<EngineCommand>();
 		let (evt_tx, evt_rx) = channel::unbounded::<EngineEvent>();
-		let _ui_err_handle = crate::log_ui::install_ui_error_layer(200);
+		let _ui_err_handle = crate::log_ui::install_ui_log_layer(4096);
 
 		// Spawn the engine loop on a smol executor thread
 		std::thread::spawn(move || {

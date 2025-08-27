@@ -32,6 +32,8 @@
 //! - Popups: Modal dialogs for path input, filtering, and log viewing
 //! - Keybinding Hints: Context-sensitive help text
 
+use std::collections::VecDeque;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -50,29 +52,17 @@ use ratatui::{
 	Frame,
 };
 
+use tracing::Level;
 use tracing::{debug, info, trace};
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{fmt, prelude::*};
 
 use uncp::engine::{BackgroundEngine, EngineCommand, EngineEvent};
-use uncp::log_ui::UiErrorEvent;
-use uncp::log_ui::UiErrorLayer;
+use uncp::log_env_filter;
+use uncp::log_ui::UiLogLayer;
+use uncp::log_ui::{LevelToggles, LogDedup};
 use uncp::ui::PresentationState;
 
 const SPINNER: &[char] = &['⠋', '⠙', '⠸', '⠴', '⠦', '⠇'];
-
-fn level_at_least(event_level: tracing::Level, min_level: tracing::Level) -> bool {
-	fn to_int(lvl: tracing::Level) -> u8 {
-		match lvl.as_str() {
-			"ERROR" => 5,
-			"WARN" => 4,
-			"INFO" => 3,
-			"DEBUG" => 2,
-			"TRACE" => 1,
-			_ => 0,
-		}
-	}
-	to_int(event_level) >= to_int(min_level)
-}
 
 fn main() -> std::io::Result<()> {
 	let log_dir =
@@ -81,16 +71,16 @@ fn main() -> std::io::Result<()> {
 	let log_path = log_dir.join("tui.log");
 	let file = std::fs::File::create(&log_path).expect("open log file");
 	let (nb, guard) = tracing_appender::non_blocking(file);
+	let (ui_layer, ui_err_handle) = UiLogLayer::new(4096);
 
-	// Tracing subscriber -> write to file (non-blocking), not the terminal
-	let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-	let (ui_layer, ui_err_handle) = UiErrorLayer::new(200);
 	tracing_subscriber::registry()
+		// Write filtered logs to file without blocking
 		.with(fmt::layer().with_writer(nb))
-		.with(env_filter)
+		// Standard env filter affects log file
+		.with(log_env_filter())
+		// UI layer captures all logs unfiltered, to allow setting filter on demand
 		.with(ui_layer)
 		.init();
-	// Tip: set RUST_LOG=uncp_tui=debug,uncp=info to change verbosity
 
 	info!("Starting uncp TUI");
 
@@ -152,10 +142,16 @@ fn main() -> std::io::Result<()> {
 
 	// Flush appender and print tail of log after UI restores
 	drop(guard);
-	if let Ok(s) = std::fs::read_to_string(&log_path) {
-		let tail: Vec<_> = s.lines().rev().take(80).collect();
+	if let Ok(f) = std::fs::File::open(&log_path) {
+		let mut tail = VecDeque::with_capacity(80);
+		for line in std::io::BufReader::new(f).lines() {
+			if tail.len() >= 80 {
+				tail.pop_front();
+			}
+			tail.push_back(line?);
+		}
 		eprintln!("\n---- uncp TUI logs (last 80 lines) ----");
-		for line in tail.into_iter().rev() {
+		for line in tail.into_iter() {
 			eprintln!("{line}");
 		}
 		eprintln!(
@@ -163,7 +159,7 @@ fn main() -> std::io::Result<()> {
 			log_path.display()
 		);
 	} else {
-		eprintln!("Logs at: {}", log_path.display());
+		eprintln!("Failed to read log file {}", log_path.display());
 	}
 
 	Ok(())
@@ -184,7 +180,7 @@ fn main() -> std::io::Result<()> {
 fn run(
 	_ex: &std::sync::Arc<Executor<'_>>,
 	terminal: &mut ratatui::DefaultTerminal,
-	ui_errs: &uncp::log_ui::UiErrorQueueHandle,
+	ui_errs: &uncp::log_ui::UiLogQueueHandle,
 ) -> std::io::Result<()> {
 	debug!("TUI loop start");
 
@@ -227,12 +223,10 @@ struct AppState {
 	progress_line: Option<String>,
 
 	// === Log State ===
-	/// Minimum log level to display in log popup
-	log_min_level: tracing::Level,
-	/// Ring buffer of recent log events
-	log_ring: std::collections::VecDeque<UiErrorEvent>,
+	/// Filter for logs to display in log popup
+	log_levels: LevelToggles,
 	/// Deduplicated log entries with occurrence counts
-	log_dedup: std::collections::VecDeque<(UiErrorEvent, u32)>,
+	log_dedup: LogDedup,
 	/// Current scroll position in log popup
 	log_scroll: usize,
 
@@ -270,9 +264,8 @@ impl AppState {
 			progress_state: Arc::new(Mutex::new(None)),
 			spinner_idx: 0,
 			progress_line: None,
-			log_min_level: tracing::Level::ERROR,
-			log_ring: std::collections::VecDeque::with_capacity(500),
-			log_dedup: std::collections::VecDeque::with_capacity(500),
+			log_levels: LevelToggles::default(),
+			log_dedup: LogDedup::new(),
 			log_scroll: 0,
 			current_discovery_progress: None,
 			current_hashing_progress: None,
@@ -352,15 +345,16 @@ fn initialize_engine(
 /// Result indicating success or IO error
 fn main_event_loop(
 	terminal: &mut ratatui::DefaultTerminal,
-	ui_errs: &uncp::log_ui::UiErrorQueueHandle,
+	ui_errs: &uncp::log_ui::UiLogQueueHandle,
 	app_state: &mut AppState,
 	evt_rx: smol::channel::Receiver<EngineEvent>,
 	cmds: smol::channel::Sender<EngineCommand>,
 ) -> std::io::Result<()> {
 	let mut last_terminal_size = terminal.size()?;
 	let mut resize_check_counter = 0;
+	let mut should_quit = false;
 
-	loop {
+	while !should_quit {
 		let current_terminal_size = terminal.size()?;
 		let terminal_area = Rect::new(
 			0,
@@ -393,9 +387,7 @@ fn main_event_loop(
 			);
 		}
 		for action in handle_events(&mut app_state.popup_stack)? {
-			if process_action(action, app_state, &cmds, terminal, terminal_area)? {
-				return Ok(()); // Quit action
-			}
+			should_quit = process_action(action, app_state, &cmds, terminal, terminal_area)?;
 		}
 
 		// Update progress and re-render every loop
@@ -410,6 +402,8 @@ fn main_event_loop(
 		// Render the UI (this will automatically use current terminal size)
 		render_ui(terminal, app_state, ui_errs)?;
 	}
+	info!("Exited main event loop");
+	Ok(())
 }
 
 /// Process a user action and return true if the application should quit
@@ -488,9 +482,8 @@ fn process_action(
 				};
 			}
 		}
-		Action::LogLevel(level) => {
-			app_state.log_min_level = level;
-			app_state.log_dedup.clear();
+		Action::ToggleLogLevel(level) => {
+			app_state.log_levels.toggle(level);
 		}
 		Action::LogScrollUp => {
 			app_state.log_scroll = app_state.log_scroll.saturating_sub(1);
@@ -499,7 +492,6 @@ fn process_action(
 			app_state.log_scroll = app_state.log_scroll.saturating_add(1);
 		}
 		Action::LogClear => {
-			app_state.log_ring.clear();
 			app_state.log_dedup.clear();
 			app_state.log_scroll = 0;
 		}
@@ -629,8 +621,10 @@ fn process_path_submission(
 		if !app_state.current_filter.include_patterns().is_empty()
 			|| !app_state.current_filter.exclude_patterns().is_empty()
 		{
-			cmds.try_send(EngineCommand::SetPathFilter(app_state.current_filter.clone()))
-				.map_err(std::io::Error::other)?;
+			cmds.try_send(EngineCommand::SetPathFilter(
+				app_state.current_filter.clone(),
+			))
+			.map_err(std::io::Error::other)?;
 		}
 
 		cmds.try_send(EngineCommand::Start)
@@ -932,7 +926,7 @@ fn update_hashing_progress(app_state: &mut AppState, progress: uncp::systems::Sy
 }
 
 /// Update UI state including progress display and log processing
-fn update_ui_state(app_state: &mut AppState, ui_errs: &uncp::log_ui::UiErrorQueueHandle) {
+fn update_ui_state(app_state: &mut AppState, ui_errs: &uncp::log_ui::UiLogQueueHandle) {
 	// Handle progress completion
 	if app_state.progress_line.as_deref() == Some("Scan complete") {
 		app_state.pres = app_state.pres.clone().with_status("Scan complete");
@@ -940,39 +934,16 @@ fn update_ui_state(app_state: &mut AppState, ui_errs: &uncp::log_ui::UiErrorQueu
 	}
 
 	// Process UI error logs
-	if let Some(err) = ui_errs.last() {
-		if app_state.log_ring.back().map(|e| e.ts_unix_ms) != Some(err.ts_unix_ms) {
-			if app_state.log_ring.len() >= 500 {
-				let _ = app_state.log_ring.pop_front();
-			}
-			app_state.log_ring.push_back(err.clone());
-
-			// Rebuild dedup: combine adjacent equal (level+target+message)
-			app_state.log_dedup.clear();
-			for ev in app_state.log_ring.iter().rev() {
-				if !level_at_least(ev.level, app_state.log_min_level) {
-					continue;
-				}
-				if let Some((last, count)) = app_state.log_dedup.front_mut() {
-					if last.level == ev.level
-						&& last.target == ev.target
-						&& last.message == ev.message
-					{
-						*count += 1;
-						continue;
-					}
-				}
-				app_state.log_dedup.push_front((ev.clone(), 1));
-			}
-		}
-	}
+	let levels = app_state.log_levels;
+	app_state.log_dedup.clear();
+	ui_errs.collect_into_filtered(levels, &mut app_state.log_dedup);
 }
 
 /// Render the UI
 fn render_ui(
 	terminal: &mut ratatui::DefaultTerminal,
 	app_state: &mut AppState,
-	ui_errs: &uncp::log_ui::UiErrorQueueHandle,
+	ui_errs: &uncp::log_ui::UiLogQueueHandle,
 ) -> std::io::Result<()> {
 	// Update spinner animation
 	if app_state.progress_line.is_some() {
@@ -992,6 +963,7 @@ fn render_ui(
 			ui_errs,
 			log_dedup: &app_state.log_dedup,
 			log_scroll: app_state.log_scroll,
+			log_levels: app_state.log_levels,
 		};
 		draw(f, params);
 	})?;
@@ -1202,7 +1174,7 @@ enum Action {
 	// Terminal events
 	Resize(u16, u16), // width, height
 	// Log-specific actions
-	LogLevel(tracing::Level),
+	ToggleLogLevel(Level),
 	LogScrollUp,
 	LogScrollDown,
 	LogClear,
@@ -1238,13 +1210,16 @@ struct DrawParams<'a> {
 	table_state: &'a mut TableState,
 
 	/// Handle to UI error queue for displaying recent errors
-	ui_errs: &'a uncp::log_ui::UiErrorQueueHandle,
+	ui_errs: &'a uncp::log_ui::UiLogQueueHandle,
 
 	/// Deduplicated log entries with occurrence counts for log popup
-	log_dedup: &'a std::collections::VecDeque<(UiErrorEvent, u32)>,
+	log_dedup: &'a LogDedup,
 
 	/// Current scroll position in the log popup (lines from top)
 	log_scroll: usize,
+
+	/// Log level toggles for filtering log popup entries
+	log_levels: LevelToggles,
 }
 
 /// Dynamic layout configuration for responsive UI design.
@@ -1412,6 +1387,7 @@ fn draw(frame: &mut Frame, params: DrawParams) {
 		ui_errs,
 		log_dedup,
 		log_scroll,
+		log_levels,
 	} = params;
 
 	// Calculate dynamic layout based on terminal size
@@ -1434,7 +1410,7 @@ fn draw(frame: &mut Frame, params: DrawParams) {
 	};
 	render_status_footer(frame, status_params, chunks[2]);
 	render_keybinding_hints(frame, popup_stack, chunks[3]);
-	render_popups(frame, popup_stack, log_dedup, log_scroll);
+	render_popups(frame, popup_stack, log_dedup, log_scroll, log_levels);
 }
 
 /// Render the header section with summary information.
@@ -1539,7 +1515,7 @@ struct StatusFooterParams<'a> {
 	processing_speed: Option<f64>,
 
 	/// Handle to UI error queue for displaying recent errors
-	ui_errs: &'a uncp::log_ui::UiErrorQueueHandle,
+	ui_errs: &'a uncp::log_ui::UiLogQueueHandle,
 }
 
 /// Render the status footer section with detailed progress information.
@@ -1714,17 +1690,15 @@ fn build_hashing_status_line(
 /// * `status_lines` - Mutable vector to append error lines to
 /// * `pres` - Presentation state containing engine snapshot errors
 /// * `ui_errs` - UI error queue handle for recent tracing errors
-fn add_error_lines(
-	status_lines: &mut Vec<Line>,
-	ui_errs: &uncp::log_ui::UiErrorQueueHandle,
-) {
+fn add_error_lines(status_lines: &mut Vec<Line>, ui_errs: &uncp::log_ui::UiLogQueueHandle) {
 	// UI subscriber errors
-	if let Some(err) = ui_errs.last() {
-		let msg = format!("{} - {}: {}", err.level, err.target, err.message);
-		let err_line = Line::from(Span::styled(
+	if let Some(err_line) = ui_errs.with_last_error(|err| {
+		let msg = format_args!("{} - {}: {}", err.level, err.target, err.message);
+		Line::from(Span::styled(
 			format!("Last error: {}", msg),
 			Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-		));
+		))
+	}) {
 		status_lines.push(err_line);
 	}
 }
@@ -1913,8 +1887,9 @@ fn add_popup_specific_hints(hint_spans: &mut Vec<Span<'static>>, popup_stack: &P
 fn render_popups(
 	frame: &mut Frame,
 	popup_stack: &PopupStack,
-	log_dedup: &std::collections::VecDeque<(UiErrorEvent, u32)>,
+	log_dedup: &LogDedup,
 	log_scroll: usize,
+	log_levels: LevelToggles,
 ) {
 	debug!(
 		"Rendering with popup stack size: {}",
@@ -1935,7 +1910,7 @@ fn render_popups(
 		}
 		Some(PopupState::LogView) => {
 			debug!("Rendering LogView popup");
-			render_log_view_popup(frame, log_dedup, log_scroll);
+			render_log_view_popup(frame, log_dedup, log_scroll, log_levels);
 		}
 		None => {
 			debug!("No popup to render");
@@ -1945,7 +1920,14 @@ fn render_popups(
 
 /// Render the path input popup
 fn render_path_input_popup(frame: &mut Frame, buffer: &str) {
-	let popup_rect = dynamic_popup_area(frame.area(), PopupType::PathInput);
+	let popup_rect = PopupConstraints {
+		width_pct: 60,
+		height_pct: 20,
+		min_width: 40,
+		min_height: 5,
+		..Default::default()
+	}
+	.in_parent(frame.area());
 	frame.render_widget(Clear, popup_rect);
 	let input_display = format!("{}_", buffer);
 	let input_widget = Paragraph::new(input_display).block(
@@ -1960,14 +1942,31 @@ fn render_path_input_popup(frame: &mut Frame, buffer: &str) {
 /// Render the log view popup
 fn render_log_view_popup(
 	frame: &mut Frame,
-	log_dedup: &std::collections::VecDeque<(UiErrorEvent, u32)>,
+	log_dedup: &LogDedup,
 	log_scroll: usize,
+	log_levels: LevelToggles,
 ) {
-	let area = dynamic_popup_area(frame.area(), PopupType::LogView);
+	let area = PopupConstraints {
+		width_pct: 90,
+		height_pct: 90,
+		min_width: 60,
+		min_height: 15,
+		..Default::default()
+	}
+	.in_parent(frame.area());
 	frame.render_widget(Clear, area);
+	let title = format!(
+		"Logs (L: toggle log view, Ctrl-L: clear log, Levels: 1={}, 2={}, 3={}, 4={}, 5={}, j/k: scroll) ",
+		if log_levels.error { "E" } else { "e" },
+		if log_levels.warn { "W" } else { "w" },
+		if log_levels.info { "I" } else { "i" },
+		if log_levels.debug { "D" } else { "d" },
+		if log_levels.trace { "T" } else { "t" },
+	);
 	let block = Block::default()
 		.borders(Borders::ALL)
-		.title("Logs (L: toggle log view, Ctrl-L: clear log, 1-5: level, j/k: scroll)");
+		.title(title)
+		.style(Style::default().fg(Color::Cyan));
 	let inner = block.inner(area);
 	frame.render_widget(block, area);
 
@@ -1978,22 +1977,27 @@ fn render_log_view_popup(
 	let rows_iter = log_dedup.iter().skip(start).take(end - start);
 
 	let mut lines = Vec::with_capacity(max_rows);
-	for (ev, count) in rows_iter.rev() {
+	for (ev, count) in rows_iter {
 		let level_style = get_log_level_style(ev.level);
-		let ts = ev.ts_unix_ms;
-		let msg = format!(
-			"[{}] {} {} — {}{}",
-			get_log_level_string(ev.level),
-			ev.target,
-			ts,
-			ev.message,
-			if *count > 1 {
-				format!(" (x{})", count)
-			} else {
-				String::new()
-			}
-		);
-		lines.push(Line::from(Span::styled(msg, level_style)));
+		let ts = chrono::DateTime::<chrono::Utc>::from(ev.t);
+		let mut spans = vec![];
+		if count > 1 {
+			spans.push(Span::styled(
+				format!("(x{}) ", count),
+				Style::default().fg(Color::Cyan),
+			));
+		}
+		spans.push(Span::styled(
+			format!("{} ", ts),
+			Style::default().fg(Color::Gray),
+		));
+		spans.push(Span::styled(format!("[{}] ", ev.level), level_style));
+		spans.push(Span::styled(
+			format!("{}: ", ev.target),
+			Style::default().fg(Color::Gray),
+		));
+		spans.push(Span::styled(ev.message, Style::default().fg(Color::White)));
+		lines.push(Line::from(spans));
 	}
 
 	// Show message when empty
@@ -2008,22 +2012,11 @@ fn render_log_view_popup(
 /// Get the style for a log level
 fn get_log_level_style(level: tracing::Level) -> Style {
 	match level {
-		tracing::Level::ERROR => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-		tracing::Level::WARN => Style::default().fg(Color::Yellow),
-		tracing::Level::INFO => Style::default().fg(Color::White),
-		tracing::Level::DEBUG => Style::default().fg(Color::Blue),
-		tracing::Level::TRACE => Style::default().fg(Color::Gray),
-	}
-}
-
-/// Get the string representation of a log level
-fn get_log_level_string(level: tracing::Level) -> &'static str {
-	match level {
-		tracing::Level::ERROR => "ERROR",
-		tracing::Level::WARN => "WARN",
-		tracing::Level::INFO => "INFO",
-		tracing::Level::DEBUG => "DEBUG",
-		tracing::Level::TRACE => "TRACE",
+		Level::ERROR => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+		Level::WARN => Style::default().fg(Color::Yellow),
+		Level::INFO => Style::default().fg(Color::Green),
+		Level::DEBUG => Style::default().fg(Color::Blue),
+		Level::TRACE => Style::default().fg(Color::Gray),
 	}
 }
 
@@ -2038,31 +2031,61 @@ fn get_log_level_string(level: tracing::Level) -> &'static str {
 ///
 /// # Returns
 /// Centered rectangle for the popup
-fn dynamic_popup_area(area: Rect, popup_type: PopupType) -> Rect {
-	let (width_pct, height_pct, min_width, min_height, max_width, max_height) = match popup_type {
-		PopupType::PathInput => (60, 20, 40, 5, 100, 10),
-		PopupType::FilterInput => (80, 60, 60, 15, 120, 40),
-		PopupType::LogView => (85, 70, 70, 20, 150, 50),
-	};
+fn popup_area(parent_area: Rect, constraints: PopupConstraints) -> Rect {
+	let PopupConstraints {
+		width_pct,
+		height_pct,
+		min_width,
+		min_height,
+		max_width,
+		max_height,
+	} = constraints;
 
 	// Calculate dimensions with bounds
-	let popup_width = (area.width * width_pct / 100).clamp(min_width, max_width.min(area.width));
-	let popup_height =
-		(area.height * height_pct / 100).clamp(min_height, max_height.min(area.height));
+	let popup_width =
+		(parent_area.width * width_pct / 100).clamp(min_width, max_width.min(parent_area.width));
+	let popup_height = (parent_area.height * height_pct / 100)
+		.clamp(min_height, max_height.min(parent_area.height));
 
 	// Center the popup
-	let x = (area.width.saturating_sub(popup_width)) / 2;
-	let y = (area.height.saturating_sub(popup_height)) / 2;
+	let x = (parent_area.width.saturating_sub(popup_width)) / 2;
+	let y = (parent_area.height.saturating_sub(popup_height)) / 2;
 
-	Rect::new(area.x + x, area.y + y, popup_width, popup_height)
+	Rect::new(
+		parent_area.x + x,
+		parent_area.y + y,
+		popup_width,
+		popup_height,
+	)
 }
 
-/// Types of popups for dynamic sizing
 #[derive(Debug, Clone, Copy)]
-enum PopupType {
-	PathInput,
-	FilterInput,
-	LogView,
+pub struct PopupConstraints {
+	pub width_pct: u16,
+	pub height_pct: u16,
+	pub min_width: u16,
+	pub min_height: u16,
+	pub max_width: u16,
+	pub max_height: u16,
+}
+
+impl Default for PopupConstraints {
+	fn default() -> Self {
+		Self {
+			width_pct: 80,
+			height_pct: 60,
+			min_width: 5,
+			min_height: 5,
+			max_width: u16::MAX,
+			max_height: u16::MAX,
+		}
+	}
+}
+
+impl PopupConstraints {
+	pub fn in_parent(self, parent_area: Rect) -> Rect {
+		popup_area(parent_area, self)
+	}
 }
 
 fn render_filter_dialog(
@@ -2072,7 +2095,15 @@ fn render_filter_dialog(
 	input_mode: &FilterInputMode,
 ) {
 	trace!("Drawing filter dialog");
-	let popup_rect = dynamic_popup_area(frame.area(), PopupType::FilterInput);
+	let popup_rect = PopupConstraints {
+		width_pct: 90,
+		height_pct: 90,
+		min_width: 60,
+		min_height: 15,
+		max_width: u16::MAX,
+		max_height: u16::MAX,
+	}
+	.in_parent(frame.area());
 	frame.render_widget(Clear, popup_rect);
 
 	// Split into two columns
@@ -2304,11 +2335,11 @@ fn handle_global_shortcuts(key: crossterm::event::KeyEvent) -> Option<Action> {
 			debug!("Key 'L' pressed - toggling log view");
 			Some(Action::ToggleLogView)
 		}
-		KeyCode::Char('1') => Some(Action::LogLevel(tracing::Level::ERROR)),
-		KeyCode::Char('2') => Some(Action::LogLevel(tracing::Level::WARN)),
-		KeyCode::Char('3') => Some(Action::LogLevel(tracing::Level::INFO)),
-		KeyCode::Char('4') => Some(Action::LogLevel(tracing::Level::DEBUG)),
-		KeyCode::Char('5') => Some(Action::LogLevel(tracing::Level::TRACE)),
+		KeyCode::Char('1') => Some(Action::ToggleLogLevel(Level::ERROR)),
+		KeyCode::Char('2') => Some(Action::ToggleLogLevel(Level::WARN)),
+		KeyCode::Char('3') => Some(Action::ToggleLogLevel(Level::INFO)),
+		KeyCode::Char('4') => Some(Action::ToggleLogLevel(Level::DEBUG)),
+		KeyCode::Char('5') => Some(Action::ToggleLogLevel(Level::TRACE)),
 		KeyCode::Char('j') => Some(Action::LogScrollDown),
 		KeyCode::Char('k') => Some(Action::LogScrollUp),
 		_ => None,

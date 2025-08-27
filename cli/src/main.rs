@@ -1,6 +1,6 @@
-use tiny_bail::prelude::c;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use tiny_bail::prelude::c;
 use tracing::{debug, subscriber::set_global_default, Level};
 use tracing_subscriber::EnvFilter;
 fn init_tracing(verbosity: i8) {
@@ -61,9 +61,7 @@ fn main() -> anyhow::Result<()> {
 
 	tracing::info!("Initialized rayon thread pool with {} threads", nthreads);
 
-	smol::block_on(async move {
-		run(opts).await
-	})
+	smol::block_on(async move { run(opts).await })
 }
 
 async fn run(opts: Opts) -> anyhow::Result<()> {
@@ -134,7 +132,12 @@ async fn run(opts: Opts) -> anyhow::Result<()> {
 			include,
 			exclude,
 		} => {
-			debug!(?include, ?exclude, "Interactive mode requested for {}", path.display());
+			debug!(
+				?include,
+				?exclude,
+				"Interactive mode requested for {}",
+				path.display()
+			);
 
 			// Create detector config with path filtering
 			let mut config = DetectorConfig::default();
@@ -179,36 +182,35 @@ async fn run(opts: Opts) -> anyhow::Result<()> {
 	Ok(())
 }
 
+use crossterm::event::{KeyCode, KeyModifiers};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use crossterm::event::{KeyCode, KeyModifiers};
 
 async fn run_interactive_mode(
 	events: smol::channel::Receiver<EngineEvent>,
 	cmds: smol::channel::Sender<EngineCommand>,
 	path: PathBuf,
 ) -> anyhow::Result<()> {
-	
 	tracing::info!("Starting interactive mode for path: {}", path.display());
 	tracing::info!("Engine will keep running until Ctrl+C is pressed");
 	tracing::info!("This mode is useful for engine testing without a UI");
-	
+
 	let should_quit = Arc::new(AtomicBool::new(false));
-	
+
 	{
 		// Set up Ctrl+C handler
 		let should_quit = should_quit.clone();
 		ctrlc::set_handler(move || {
 			tracing::info!("Received termination signal, shutting down gracefully...");
 			should_quit.store(true, Ordering::Relaxed);
-			
+
 			// TODO: Remove this when we have proper Ctrl+C handling
 			tracing::warn!("Actually, exiting abruptly for now until Q/Esc quitting is at least working, so I don't have to keep closing the terminal.");
 			std::process::exit(1);
 		})?;
 	}
-	
+
 	crossterm::terminal::enable_raw_mode()?;
 	interactive_loop(events, cmds, should_quit).await?;
 	crossterm::terminal::disable_raw_mode()?;
@@ -230,13 +232,13 @@ async fn interactive_loop(
 					if key.is_press() {
 						match key.code {
 							KeyCode::Char('q') | KeyCode::Esc => {
-								tracing::info ! ("Quit requested");
+								tracing::info!("Quit requested");
 								should_quit.store(true, Ordering::Relaxed);
 							}
 							KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
 								tracing::info!("Ctrl+C requested");
 								should_quit.store(true, Ordering::Relaxed);
-								
+
 								// TODO: Remove this when we have proper Ctrl+C handling
 								tracing::warn!("Actually, exiting abruptly for now until Q/Esc quitting is at least working, so I don't have to keep closing the terminal.");
 								std::process::exit(1);
@@ -248,7 +250,7 @@ async fn interactive_loop(
 				other => tracing::trace!("Other event: {other:?}"),
 			}
 		}
-		
+
 		if should_quit.load(Ordering::Relaxed) {
 			tracing::info!("Stopping engine...");
 			c!(cmds.send(EngineCommand::Stop).await);
@@ -263,7 +265,9 @@ async fn interactive_loop(
 					EngineEvent::SnapshotReady(snap) => {
 						// Print progress periodically (every 2 seconds)
 						let now = std::time::Instant::now();
-						if now.duration_since(last_progress_time) >= std::time::Duration::from_secs(2) {
+						if now.duration_since(last_progress_time)
+							>= std::time::Duration::from_secs(2)
+						{
 							tracing::info!(
 								"progress: total={} pending_hash={}",
 								snap.total_files,

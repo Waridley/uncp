@@ -10,20 +10,25 @@ members = ["cli", "gui", "tui"]
 
 [workspace.dependencies]
 anyhow = "1.0.79"
+chrono = { version = "0.4.31", features = ["serde"] }
 crossterm = "0.29.0"
+left-right = "0.11.5"
+lockfree = "0.5.1"
 ordered-float = "4.2.0"
 smol = "2.0.2"
 image = "0.24.0"
+indexmap = "2.11.0"
 tiny_bail = { version = "0.5.0", default-features = false, features = ["tracing", "error"] }
 tracing = "0.1.40"
 serde = { version = "1", features = ["derive"] }
 rayon = "1.9.0"
+ringbuf = "0.4.8"
+smallvec = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs = "5"
 futures-lite = "2"
 async-channel = "2"
 polars = { version = "0.50.0", features = ["lazy", "temporal", "strings", "regex", "timezones", "parquet", "ipc", "dtype-struct"] }
-
 
 [dependencies]
 smol.workspace = true
@@ -68,9 +73,14 @@ anyhow.workspace = true
 
 # Utilities
 uuid = { version = "1.6.1", features = ["v4", "serde"] }
-chrono = { version = "0.4.31", features = ["serde"] }
+chrono.workspace = true
+indexmap.workspace = true
+left-right.workspace = true
+lockfree.workspace = true
 num_cpus = "1.16.0"
+ringbuf.workspace = true
 serde_json = "1"
+smallvec.workspace = true
 tiny_bail.workspace = true
 dirs.workspace = true
 async-channel.workspace = true

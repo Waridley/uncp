@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 uncp.path = ".."
+chrono.workspace = true
 crossterm.workspace = true
 ratatui = "0.30.0-alpha.2"
 smol.workspace = true
