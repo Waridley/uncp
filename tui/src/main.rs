@@ -322,8 +322,10 @@ fn initialize_engine(
 	.detach();
 
 	// Set initial path and start
-	let _ = cmds.try_send(EngineCommand::SetPath(app_state.current_path.clone()));
-	let _ = cmds.try_send(EngineCommand::Start);
+	cmds.try_send(EngineCommand::SetPath(app_state.current_path.clone()))
+		.map_err(std::io::Error::other)?;
+	cmds.try_send(EngineCommand::Start)
+		.map_err(std::io::Error::other)?;
 
 	Ok((events, cmds))
 }
@@ -511,7 +513,8 @@ fn process_action(
 			process_scan_action(app_state, cmds)?;
 		}
 		Action::Hash => {
-			let _ = cmds.try_send(EngineCommand::Start);
+			cmds.try_send(EngineCommand::Start)
+				.map_err(std::io::Error::other)?;
 			app_state.pres = app_state.pres.clone().with_status("Hashing started...");
 		}
 		Action::Up => {
@@ -614,21 +617,24 @@ fn process_path_submission(
 		));
 
 		// Restart scan with new path
-		let _ = cmds.try_send(EngineCommand::Stop);
-		let _ = cmds.try_send(EngineCommand::ClearState);
+		cmds.try_send(EngineCommand::Stop)
+			.map_err(std::io::Error::other)?;
+		cmds.try_send(EngineCommand::ClearState)
+			.map_err(std::io::Error::other)?;
 		std::thread::sleep(std::time::Duration::from_millis(200));
-		let _ = cmds.try_send(EngineCommand::SetPath(app_state.current_path.clone()));
+		cmds.try_send(EngineCommand::SetPath(app_state.current_path.clone()))
+			.map_err(std::io::Error::other)?;
 
 		// Apply current filter if any
 		if !app_state.current_filter.include_patterns().is_empty()
 			|| !app_state.current_filter.exclude_patterns().is_empty()
 		{
-			let _ = cmds.try_send(EngineCommand::SetPathFilter(
-				app_state.current_filter.clone(),
-			));
+			cmds.try_send(EngineCommand::SetPathFilter(app_state.current_filter.clone()))
+				.map_err(std::io::Error::other)?;
 		}
 
-		let _ = cmds.try_send(EngineCommand::Start);
+		cmds.try_send(EngineCommand::Start)
+			.map_err(std::io::Error::other)?;
 	}
 	Ok(())
 }
@@ -675,16 +681,22 @@ fn process_filter_submission(
 
 				// Apply filter to engine
 				if include_patterns.is_empty() && exclude_patterns.is_empty() {
-					let _ = cmds.try_send(EngineCommand::ClearPathFilter);
+					cmds.try_send(EngineCommand::ClearPathFilter)
+						.map_err(std::io::Error::other)?;
 				} else {
-					let _ = cmds.try_send(EngineCommand::SetPathFilter(new_filter));
+					cmds.try_send(EngineCommand::SetPathFilter(new_filter))
+						.map_err(std::io::Error::other)?;
 				}
 
 				// Restart scan with new filter
-				let _ = cmds.try_send(EngineCommand::Stop);
-				let _ = cmds.try_send(EngineCommand::ClearState);
-				let _ = cmds.try_send(EngineCommand::SetPath(app_state.current_path.clone()));
-				let _ = cmds.try_send(EngineCommand::Start);
+				cmds.try_send(EngineCommand::Stop)
+					.map_err(std::io::Error::other)?;
+				cmds.try_send(EngineCommand::ClearState)
+					.map_err(std::io::Error::other)?;
+				cmds.try_send(EngineCommand::SetPath(app_state.current_path.clone()))
+					.map_err(std::io::Error::other)?;
+				cmds.try_send(EngineCommand::Start)
+					.map_err(std::io::Error::other)?;
 			}
 			Err(e) => {
 				app_state.pres = app_state
@@ -713,8 +725,10 @@ fn process_scan_action(
 		return Ok(());
 	}
 
-	let _ = cmds.try_send(EngineCommand::SetPath(path));
-	let _ = cmds.try_send(EngineCommand::Start);
+	cmds.try_send(EngineCommand::SetPath(path))
+		.map_err(std::io::Error::other)?;
+	cmds.try_send(EngineCommand::Start)
+		.map_err(std::io::Error::other)?;
 	app_state.pres = app_state.pres.clone().with_status("Scanning...");
 	Ok(())
 }
@@ -780,12 +794,17 @@ fn process_engine_events(app_state: &mut AppState, evt_rx: &smol::channel::Recei
 				}
 			}
 			EngineEvent::Started => {
-				debug!("TUI: Engine started");
+				info!("TUI: Engine started");
 				app_state.engine_status = "Ready".to_string();
 				app_state.pres = app_state.pres.clone().with_status("Scan engine ready");
 			}
+			EngineEvent::Stopped => {
+				info!("TUI: Engine stopped");
+				app_state.engine_status = "Stopped".to_string();
+				app_state.pres = app_state.pres.clone().with_status("Scan engine stopped");
+			}
 			EngineEvent::Completed => {
-				debug!("TUI: Engine completed");
+				info!("TUI: Engine completed");
 				app_state.engine_status = "Completed".to_string();
 				app_state.pres = app_state.pres.clone().with_status("Scan completed");
 			}
@@ -1568,7 +1587,7 @@ fn render_status_footer(frame: &mut Frame, params: StatusFooterParams, area: Rec
 	))));
 
 	// Error messages
-	add_error_lines(&mut status_lines, pres, ui_errs);
+	add_error_lines(&mut status_lines, ui_errs);
 
 	let footer =
 		Paragraph::new(status_lines).block(Block::default().borders(Borders::ALL).title("Status"));
@@ -1697,21 +1716,11 @@ fn build_hashing_status_line(
 /// * `ui_errs` - UI error queue handle for recent tracing errors
 fn add_error_lines(
 	status_lines: &mut Vec<Line>,
-	pres: &PresentationState,
 	ui_errs: &uncp::log_ui::UiErrorQueueHandle,
 ) {
 	// UI subscriber errors
 	if let Some(err) = ui_errs.last() {
 		let msg = format!("{} - {}: {}", err.level, err.target, err.message);
-		let err_line = Line::from(Span::styled(
-			format!("Last error: {}", msg),
-			Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-		));
-		status_lines.push(err_line);
-	}
-
-	// Engine snapshot errors
-	if let Some((ref msg, _detail)) = &pres.last_error {
 		let err_line = Line::from(Span::styled(
 			format!("Last error: {}", msg),
 			Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),

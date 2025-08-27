@@ -17,8 +17,6 @@ pub struct PresentationState {
 	pub file_table: Vec<(DirEntryId, u64, String, bool)>,
 	// Current path filter for the file table
 	pub current_path_filter: String,
-	// Transient error indicator for UI consumption
-	pub last_error: Option<(String, Option<String>)>,
 }
 
 impl PresentationState {
@@ -40,7 +38,6 @@ impl PresentationState {
 			pending_hash_scoped: None,
 			file_table,
 			current_path_filter: String::new(),
-			last_error: None,
 		}
 	}
 
@@ -61,7 +58,6 @@ impl PresentationState {
 			pending_hash_scoped: None,
 			file_table,
 			current_path_filter: path_filter.to_string(),
-			last_error: None,
 		}
 	}
 

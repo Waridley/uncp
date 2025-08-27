@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 uncp.path = ".."
-crossterm = "0.29.0"
+crossterm.workspace = true
 ratatui = "0.30.0-alpha.2"
 smol.workspace = true
 tracing-subscriber.workspace = true

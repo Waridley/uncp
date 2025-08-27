@@ -1378,6 +1378,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctrlc"
+version = "3.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "697b5419f348fd5ae2478e8018cb016c00a5881c7f46c717de98ffd135a5651c"
+dependencies = [
+ "nix",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "cursor-icon"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6458,6 +6468,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tiny_bail"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5646ef059c58c54e4cd099a422cc792efd9dc27ebfcfab47d968b1290452c559"
+dependencies = [
+ "tracing",
+]
+
+[[package]]
 name = "tinystr"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6612,6 +6631,7 @@ version = "0.1.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3523ab5a71916ccf420eebdf5521fcef02141234bbc0b8a49f2fdc4544364ef"
 dependencies = [
+ "log",
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
@@ -6792,6 +6812,7 @@ dependencies = [
  "tempfile",
  "test-log",
  "thiserror 1.0.58",
+ "tiny_bail",
  "tracing",
  "tracing-subscriber",
  "tree_magic_mini",
@@ -6807,10 +6828,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "crossterm 0.29.0",
+ "ctrlc",
  "dirs 5.0.1",
  "futures-lite 2.3.0",
  "rayon",
  "smol 2.0.2",
+ "tiny_bail",
  "tracing",
  "tracing-subscriber",
  "uncp",

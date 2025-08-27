@@ -539,7 +539,6 @@ impl DuplicateDetector {
 		&mut self,
 		path: PathBuf,
 		progress: std::sync::Arc<dyn Fn(crate::systems::SystemProgress) + Send + Sync>,
-		_cancellation_token: std::sync::Arc<std::sync::atomic::AtomicBool>,
 	) -> DetectorResult<()> {
 		info!(
 			"Detector: scan_directory {} (with progress and cancellation)",

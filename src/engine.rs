@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 use async_channel as channel;
 use futures_lite::future;
-use tracing::{info, warn};
+use tiny_bail::prelude::c;
+use tracing::{debug, error, info, warn};
 
 use crate::systems::SystemProgress;
 use crate::{DuplicateDetector, paths::default_cache_dir};
@@ -62,6 +63,7 @@ use crate::{DuplicateDetector, paths::default_cache_dir};
 ///
 /// Commands are sent through async channels and are inherently thread-safe.
 /// Multiple producers can send commands concurrently without synchronization.
+#[derive(Clone)]
 pub enum EngineCommand {
 	/// Change the directory path being scanned for duplicate files
 	SetPath(PathBuf),
@@ -83,6 +85,22 @@ pub enum EngineCommand {
 	RegisterSystem(std::sync::Arc<dyn crate::systems::SystemRunner>),
 }
 
+impl std::fmt::Debug for EngineCommand {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			EngineCommand::SetPath(p) => write!(f, "SetPath({p:?})"),
+			EngineCommand::Start => write!(f, "Start"),
+			EngineCommand::Pause => write!(f, "Pause"),
+			EngineCommand::Stop => write!(f, "Stop"),
+			EngineCommand::ClearState => write!(f, "ClearState"),
+			EngineCommand::LoadCache(p) => write!(f, "LoadCache({p:?})"),
+			EngineCommand::SetPathFilter(p) => write!(f, "SetPathFilter({p:?})"),
+			EngineCommand::ClearPathFilter => write!(f, "ClearPathFilter"),
+			EngineCommand::RegisterSystem(runner) => write!(f, "RegisterSystem({:?})", runner.name()),
+		}
+	}
+}
+
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
 	DiscoveryProgress(SystemProgress),
@@ -100,6 +118,7 @@ pub enum EngineEvent {
 		files_removed: usize,
 		files_invalidated: usize,
 	},
+	Stopped,
 }
 
 pub struct BackgroundEngine {
@@ -210,7 +229,7 @@ impl BackgroundEngine {
 	) {
 		let (cmd_tx, cmd_rx) = channel::unbounded::<EngineCommand>();
 		let (evt_tx, evt_rx) = channel::unbounded::<EngineEvent>();
-		let ui_err_handle = crate::log_ui::install_ui_error_layer(200);
+		let _ui_err_handle = crate::log_ui::install_ui_error_layer(200);
 
 		// Spawn the engine loop on a smol executor thread
 		std::thread::spawn(move || {
@@ -218,23 +237,14 @@ impl BackgroundEngine {
 				info!("Engine: started in {:?} mode", mode);
 				let mut current_path: Option<PathBuf> = None;
 				let mut discovery_completed_for_path: Option<PathBuf> = None;
-				let cancellation_token =
-					std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 				let mut engine_running = false;
-				// If any tracing errors captured, surface most recent to UI via a snapshot
-				if let Some(err) = ui_err_handle.last() {
-					let mut snap = crate::ui::PresentationState::from_detector(&detector);
-					snap.last_error = Some((
-						format!("{} - {}: {}", err.level, err.target, err.message),
-						None,
-					));
-					let _ = evt_tx.send(EngineEvent::SnapshotReady(snap)).await;
-				}
 
 				// Save snapshots periodically to avoid losing too much work
 				let mut last_save = std::time::Instant::now();
 
-				let _ = evt_tx.send(EngineEvent::Started).await;
+				if let Err(e) = evt_tx.send(EngineEvent::Started).await {
+					error!("Engine: failed to send started event: {}", e);
+				}
 
 				// Send initial snapshot
 				let mut snap = crate::ui::PresentationState::from_detector(&detector);
@@ -242,17 +252,13 @@ impl BackgroundEngine {
 					let scoped = detector.files_pending_hash_under_prefix(p.to_string_lossy());
 					snap.pending_hash_scoped = Some(scoped);
 				}
-				// Attach latest tracing error if any
-				snap.last_error = ui_err_handle.last().map(|err| {
-					(
-						format!("{} - {}: {}", err.level, err.target, err.message),
-						None,
-					)
-				});
-				let _ = evt_tx.send(EngineEvent::SnapshotReady(snap)).await;
+				if let Err(e) = evt_tx.send(EngineEvent::SnapshotReady(snap)).await {
+					error!("Engine: failed to send initial snapshot: {}", e);
+				}
 				loop {
 					// Pull any pending commands without blocking
 					while let Ok(cmd) = cmd_rx.try_recv() {
+						debug!("Engine: received command: {cmd:?}");
 						match cmd {
 							EngineCommand::SetPath(p) => {
 								current_path = Some(p.clone());
@@ -263,52 +269,46 @@ impl BackgroundEngine {
 							}
 							EngineCommand::Start => {
 								engine_running = true;
-								// Reset cancellation token when starting
-								cancellation_token
-									.store(false, std::sync::atomic::Ordering::Relaxed);
 							}
 							EngineCommand::Pause => {
 								engine_running = false;
 							}
 							EngineCommand::Stop => {
+								info!("Engine: Stopping...");
 								// Cancel any ongoing operations and stop the engine
-								cancellation_token
-									.store(true, std::sync::atomic::Ordering::Relaxed);
 								engine_running = false;
+								c!(evt_tx.send(EngineEvent::Stopped).await);
 								break;
 							}
 							EngineCommand::ClearState => {
 								info!("Engine: clearing detector state");
 								detector.clear_state();
-								// Reset cancellation token when clearing state
-								cancellation_token
-									.store(false, std::sync::atomic::Ordering::Relaxed);
 							}
 							EngineCommand::LoadCache(dir) => {
-								let _ = evt_tx.send(EngineEvent::CacheLoading).await;
+								c!(evt_tx.send(EngineEvent::CacheLoading).await);
 								if let Ok(true) = detector.load_cache_all(dir) {
 									info!("Engine: loaded cache in background");
-									let _ = evt_tx.send(EngineEvent::CacheLoaded).await;
+									c!(evt_tx.send(EngineEvent::CacheLoaded).await);
 
 									// Validate cached files against filesystem
-									let _ = evt_tx.send(EngineEvent::CacheValidating).await;
+									c!(evt_tx.send(EngineEvent::CacheValidating).await);
 									match detector.validate_cached_files() {
 										Ok((files_removed, files_invalidated)) => {
-											let _ = evt_tx
+											c!(evt_tx
 												.send(EngineEvent::CacheValidated {
 													files_removed,
 													files_invalidated,
 												})
-												.await;
+												.await);
 										}
 										Err(e) => {
 											warn!("Cache validation failed: {}", e);
-											let _ = evt_tx
+											c!(evt_tx
 												.send(EngineEvent::CacheValidated {
 													files_removed: 0,
 													files_invalidated: 0,
 												})
-												.await;
+												.await);
 										}
 									}
 								}
@@ -328,9 +328,7 @@ impl BackgroundEngine {
 						}
 					}
 
-					if engine_running
-						&& !cancellation_token.load(std::sync::atomic::Ordering::Relaxed)
-					{
+					if engine_running {
 						// Check if there's work to do
 						let pending_hash_count = detector.files_pending_hash();
 						let _total_files = detector.total_files();
@@ -372,15 +370,8 @@ impl BackgroundEngine {
 									.scan_with_progress_and_cancellation(
 										p.clone(),
 										discovery_progress,
-										cancellation_token.clone(),
 									)
 									.await;
-
-								// Check if discovery was cancelled
-								if cancellation_token.load(std::sync::atomic::Ordering::Relaxed) {
-									info!("Engine: discovery was cancelled");
-									continue; // Skip to next iteration to process new commands
-								}
 
 								if result.is_ok() {
 									// Emit final discovery progress
@@ -447,7 +438,7 @@ impl BackgroundEngine {
 								detector.total_files(),
 								pending_hash_count
 							);
-							let _ = evt_tx.send(EngineEvent::Completed).await;
+							c!(evt_tx.send(EngineEvent::Completed).await);
 							engine_running = false;
 
 							// For CLI usage: if we have a path set and no pending work, we're done
@@ -467,14 +458,7 @@ impl BackgroundEngine {
 							snap.file_table = detector.files_under_prefix_sorted_by_size(&path_str);
 							snap.current_path_filter = path_str.to_string();
 						}
-						// Attach latest tracing error if any
-						snap.last_error = ui_err_handle.last().map(|err| {
-							(
-								format!("{} - {}: {}", err.level, err.target, err.message),
-								None,
-							)
-						});
-						let _ = evt_tx.send(EngineEvent::SnapshotReady(snap)).await;
+						c!(evt_tx.send(EngineEvent::SnapshotReady(snap)).await);
 
 						// Throttled autosave: every ~5s to avoid blocking frequently
 						// Only attempt cache save if auto-cache is enabled (avoids filesystem access in tests)
@@ -482,10 +466,10 @@ impl BackgroundEngine {
 							&& !detector.config.disable_auto_cache
 						{
 							if let Some(dir) = default_cache_dir() {
-								let _ = evt_tx.send(EngineEvent::CacheSaving).await;
+								c!(evt_tx.send(EngineEvent::CacheSaving).await);
 								// Save cache synchronously but quickly
 								let _ = detector.save_cache_all(dir);
-								let _ = evt_tx.send(EngineEvent::CacheSaved).await;
+								c!(evt_tx.send(EngineEvent::CacheSaved).await);
 							}
 							last_save = std::time::Instant::now();
 						}
@@ -503,18 +487,11 @@ impl BackgroundEngine {
 							snap.file_table = detector.files_under_prefix_sorted_by_size(&path_str);
 							snap.current_path_filter = path_str.to_string();
 						}
-						// Attach latest tracing error if any
-						snap.last_error = ui_err_handle.last().map(|err| {
-							(
-								format!("{} - {}: {}", err.level, err.target, err.message),
-								None,
-							)
-						});
-						let _ = evt_tx.send(EngineEvent::SnapshotReady(snap)).await;
+						c!(evt_tx.send(EngineEvent::SnapshotReady(snap)).await);
 						smol::Timer::after(std::time::Duration::from_millis(500)).await;
 					}
 				}
-				// Engine loop ends when no more commands arrive
+				info!("Engine: exited loop");
 			})
 		});
 
