@@ -61,7 +61,7 @@ fn main() {
 
 	smol::block_on(async move {
 		if let Err(e) = run(opts).await {
-			eprintln!("error: {e}");
+			tracing::error!("error: {e}");
 			std::process::exit(1);
 		}
 	});
@@ -105,10 +105,11 @@ async fn run(opts: Opts) -> anyhow::Result<()> {
 			while let Ok(evt) = events.recv().await {
 				match evt {
 					EngineEvent::SnapshotReady(snap) => {
-						// Print a compact progress line to stderr (respects global tracing level)
-						eprintln!(
+						// Print a compact progress line using tracing
+						tracing::info!(
 							"progress: total={} pending_hash={}",
-							snap.total_files, snap.pending_hash
+							snap.total_files,
+							snap.pending_hash
 						);
 						// Exit early if this requested directory is fully processed
 						if snap.pending_hash_under_prefix(&pref) == 0 {
@@ -134,12 +135,12 @@ async fn run(opts: Opts) -> anyhow::Result<()> {
 				if dir.exists() {
 					tracing::warn!("Deleting cache at {}", dir.display());
 					fs::remove_dir_all(&dir)?;
-					println!("Deleted cache: {}", dir.display());
+					tracing::info!("Deleted cache: {}", dir.display());
 				} else {
-					println!("Cache not found: {}", dir.display());
+					tracing::info!("Cache not found: {}", dir.display());
 				}
 			} else {
-				println!("No cache directory for this platform");
+				tracing::info!("No cache directory for this platform");
 			}
 		}
 	}
@@ -147,11 +148,11 @@ async fn run(opts: Opts) -> anyhow::Result<()> {
 }
 
 fn print_summary(detector: &DuplicateDetector) {
-	println!("Total files: {}", detector.total_files());
-	println!("Pending hash: {}", detector.files_pending_hash());
-	println!("By type:");
+	tracing::info!("Total files: {}", detector.total_files());
+	tracing::info!("Pending hash: {}", detector.files_pending_hash());
+	tracing::info!("By type:");
 	for (k, v) in detector.files_by_type_counts() {
-		println!("  {k}: {v}");
+		tracing::info!("  {k}: {v}");
 	}
 }
 

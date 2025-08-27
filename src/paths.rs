@@ -256,7 +256,7 @@ impl DirEntryId {
 	pub fn is_descendant_of_path(&self, prefix_path: impl AsRef<Path>) -> bool {
 		let prefix_path = prefix_path.as_ref();
 		let prefix_path = prefix_path.canonicalize().unwrap_or_else(|e| {
-			error!("Failed to canonicalize prefix path: {e}");
+			error!("Failed to canonicalize prefix {prefix_path:?}: {e}");
 			prefix_path.to_path_buf()
 		});
 
