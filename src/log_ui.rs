@@ -9,7 +9,7 @@ use std::time::SystemTime;
 use tracing::level_filters::LevelFilter;
 use tracing::{Event, Level, Subscriber, warn};
 use tracing_subscriber::layer::{Context, Layer};
-use tracing_subscriber::prelude::*; // brings SubscriberExt::with into scope
+use tracing_subscriber::prelude::*;
 
 pub struct Rb(ringbuf::HeapRb<UiLogEvent>);
 
@@ -200,11 +200,18 @@ pub struct UiLogEvent {
 	pub level: Level,
 	pub target: String,
 	pub message: String,
+	pub fields: Vec<(&'static str, String)>,
 }
 
 #[derive(Debug, Clone)]
 pub struct UiLogQueueHandle {
 	readers: EventBufReaders,
+}
+
+impl UiLogQueueHandle {
+	pub fn capacity(&self, level: Level) -> usize {
+		self.readers.capacity(level)
+	}
 }
 
 #[derive(Debug)]
@@ -251,6 +258,41 @@ impl EventBufReaders {
 				})
 				.cloned()
 		}));
+	}
+
+	pub fn capacity(&self, level: Level) -> usize {
+		match level {
+			Level::TRACE => self
+				.trace
+				.handle()
+				.enter()
+				.map(|buf| buf.capacity().get())
+				.unwrap_or(0),
+			Level::DEBUG => self
+				.debug
+				.handle()
+				.enter()
+				.map(|buf| buf.capacity().get())
+				.unwrap_or(0),
+			Level::INFO => self
+				.info
+				.handle()
+				.enter()
+				.map(|buf| buf.capacity().get())
+				.unwrap_or(0),
+			Level::WARN => self
+				.warn
+				.handle()
+				.enter()
+				.map(|buf| buf.capacity().get())
+				.unwrap_or(0),
+			Level::ERROR => self
+				.error
+				.handle()
+				.enter()
+				.map(|buf| buf.capacity().get())
+				.unwrap_or(0),
+		}
 	}
 }
 
@@ -312,7 +354,7 @@ impl UiLogLayer {
 
 struct MsgVisitor {
 	message: Option<String>,
-	fields: Vec<(String, String)>,
+	fields: Vec<(&'static str, String)>,
 }
 
 impl MsgVisitor {
@@ -329,16 +371,16 @@ impl tracing::field::Visit for MsgVisitor {
 		if field.name() == "message" {
 			self.message = Some(value.to_string());
 		} else {
-			self.fields
-				.push((field.name().to_string(), value.to_string()));
+			self.fields.push((field.name(), value.to_string()));
 		}
 	}
+
 	fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
 		let v = format!("{:?}", value);
 		if field.name() == "message" {
 			self.message = Some(v);
 		} else {
-			self.fields.push((field.name().to_string(), v));
+			self.fields.push((field.name(), v));
 		}
 	}
 }
@@ -352,27 +394,24 @@ where
 		if ctx.enabled(meta) {
 			let mut v = MsgVisitor::new();
 			event.record(&mut v);
-			let message = v.message.unwrap_or_else(|| {
-				v.fields
-					.iter()
-					.map(|(k, val)| format!("{}={}", k, val))
-					.collect::<Vec<_>>()
-					.join(" ")
-			});
+			let message = v.message.unwrap_or_default();
 			let item = UiLogEvent {
 				t: SystemTime::now(),
 				level: *meta.level(),
 				target: meta.target().to_string(),
 				message,
+				fields: v.fields,
 			};
-			let _ = self.tx.send(item); // don't try logging when logging is what failed
+			if self.tx.send(item).is_err() {
+				// don't try logging when logging is what failed
+			}
 		}
 	}
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct LogDedup {
-	list: Vec<(Level, String, String, SmallVec<[SystemTime; 1]>)>,
+	list: Vec<DedupedEvent>,
 }
 
 impl LogDedup {
@@ -398,68 +437,71 @@ impl LogDedup {
 		self.list.is_empty()
 	}
 
-	pub fn iter(&self) -> impl Iterator<Item = (UiLogEvent, u32)> {
-		self.list.iter().map(|(level, target, message, times)| {
-			(
-				UiLogEvent {
-					t: times[0],
-					level: *level,
-					target: target.clone(),
-					message: message.clone(),
-				},
-				times.len() as u32,
-			)
-		})
+	pub fn iter(&self) -> impl Iterator<Item = DedupedEvent> {
+		self.list.iter().cloned()
 	}
 }
 
-impl FromIterator<UiLogEvent> for LogDedup {
-	fn from_iter<T: IntoIterator<Item = UiLogEvent>>(iter: T) -> Self {
-		let mut list = Vec::<(Level, String, String, SmallVec<[SystemTime; 1]>)>::new();
-		for ev in iter {
-			let UiLogEvent {
-				t,
-				level,
-				target,
-				message,
-			} = ev;
-			let dedup = list
-				.last()
-				.map(|(last_level, last_target, last_message, _)| {
-					*last_level == level && *last_target == target && *last_message == message
-				})
-				.unwrap_or(false);
-			if dedup {
-				list.last_mut().unwrap().3.push(t);
-			} else {
-				list.push((level, target, message, SmallVec::from([t])));
-			}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DedupedEvent {
+	pub level: Level,
+	pub target: String,
+	pub message: String,
+	pub times: SmallVec<[EventInstance; 1]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EventInstance {
+	pub t: SystemTime,
+	pub fields: Vec<(&'static str, String)>,
+}
+
+impl EventInstance {
+	pub fn new(t: SystemTime, fields: impl Into<Vec<(&'static str, String)>>) -> Self {
+		Self {
+			t,
+			fields: fields.into(),
 		}
-		Self { list }
+	}
+}
+
+impl<Fields: Into<Vec<(&'static str, String)>>> From<(SystemTime, Fields)> for EventInstance {
+	fn from(value: (SystemTime, Fields)) -> Self {
+		Self::new(value.0, value.1)
+	}
+}
+
+impl PartialEq<DedupedEvent> for UiLogEvent {
+	fn eq(&self, other: &DedupedEvent) -> bool {
+		// Ignore time and fields for compactness.
+		// Fields might be incorrect to ignore, can be changed or made togglable if it becomes a problem
+		self.level == other.level && self.target == other.target && self.message == other.message
+	}
+}
+
+impl From<UiLogEvent> for DedupedEvent {
+	fn from(value: UiLogEvent) -> Self {
+		Self {
+			level: value.level,
+			target: value.target,
+			message: value.message,
+			times: SmallVec::from([(value.t, value.fields).into()]),
+		}
 	}
 }
 
 impl Extend<UiLogEvent> for LogDedup {
 	fn extend<T: IntoIterator<Item = UiLogEvent>>(&mut self, iter: T) {
 		for ev in iter {
-			let UiLogEvent {
-				t,
-				level,
-				target,
-				message,
-			} = ev;
-			let dedup = self
-				.list
-				.last()
-				.map(|(last_level, last_target, last_message, _)| {
-					*last_level == level && *last_target == target && *last_message == message
-				})
-				.unwrap_or(false);
+			let dedup = self.list.last().map(|last| ev == *last).unwrap_or(false);
 			if dedup {
-				self.list.last_mut().unwrap().3.push(t);
-			} else {
 				self.list
-					.push((level, target, message, SmallVec::from([t])));
+					.last_mut()
+					.unwrap()
+					.times
+					.push((ev.t, ev.fields).into());
+			} else {
+				self.list.push(ev.into());
 			}
 		}
 	}

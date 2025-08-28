@@ -71,7 +71,7 @@ fn main() -> std::io::Result<()> {
 	let log_path = log_dir.join("tui.log");
 	let file = std::fs::File::create(&log_path).expect("open log file");
 	let (nb, guard) = tracing_appender::non_blocking(file);
-	let (ui_layer, ui_err_handle) = UiLogLayer::new(4096);
+	let (ui_layer, ui_err_handle) = UiLogLayer::new(10240);
 
 	tracing_subscriber::registry()
 		// Write filtered logs to file without blocking
@@ -1410,7 +1410,14 @@ fn draw(frame: &mut Frame, params: DrawParams) {
 	};
 	render_status_footer(frame, status_params, chunks[2]);
 	render_keybinding_hints(frame, popup_stack, chunks[3]);
-	render_popups(frame, popup_stack, log_dedup, log_scroll, log_levels);
+	render_popups(
+		frame,
+		popup_stack,
+		log_dedup,
+		log_scroll,
+		log_levels,
+		ui_errs,
+	);
 }
 
 /// Render the header section with summary information.
@@ -1890,6 +1897,7 @@ fn render_popups(
 	log_dedup: &LogDedup,
 	log_scroll: usize,
 	log_levels: LevelToggles,
+	ui_errs: &uncp::log_ui::UiLogQueueHandle,
 ) {
 	debug!(
 		"Rendering with popup stack size: {}",
@@ -1910,7 +1918,7 @@ fn render_popups(
 		}
 		Some(PopupState::LogView) => {
 			debug!("Rendering LogView popup");
-			render_log_view_popup(frame, log_dedup, log_scroll, log_levels);
+			render_log_view_popup(frame, log_dedup, log_scroll, log_levels, ui_errs);
 		}
 		None => {
 			debug!("No popup to render");
@@ -1945,6 +1953,7 @@ fn render_log_view_popup(
 	log_dedup: &LogDedup,
 	log_scroll: usize,
 	log_levels: LevelToggles,
+	ui_errs: &uncp::log_ui::UiLogQueueHandle,
 ) {
 	let area = PopupConstraints {
 		width_pct: 90,
@@ -1977,21 +1986,32 @@ fn render_log_view_popup(
 	let rows_iter = log_dedup.iter().skip(start).take(end - start);
 
 	let mut lines = Vec::with_capacity(max_rows);
-	for (ev, count) in rows_iter {
+	for ev in rows_iter {
 		let level_style = get_log_level_style(ev.level);
-		let ts = chrono::DateTime::<chrono::Utc>::from(ev.t);
 		let mut spans = vec![];
+		// Potential improvement: Dropdown or key toggle to render actual timestamps for repeated messages
+		let count = ev.times.len();
+		let cap = ui_errs.capacity(ev.level);
+		let count_width = cap.ilog10() as usize + 1;
 		if count > 1 {
+			if count >= cap {
+				spans.push(Span::styled(
+					format!("(>{cap:count_width$})"),
+					Style::default().fg(Color::Red),
+				));
+			} else {
+				spans.push(Span::styled(
+					format!("( {count:count_width$})"),
+					Style::default().fg(Color::Cyan),
+				));
+			}
+		} else {
 			spans.push(Span::styled(
-				format!("(x{}) ", count),
-				Style::default().fg(Color::Cyan),
+				format!("( {:count_width$})", ""),
+				Style::default().fg(Color::Gray),
 			));
 		}
-		spans.push(Span::styled(
-			format!("{} ", ts),
-			Style::default().fg(Color::Gray),
-		));
-		spans.push(Span::styled(format!("[{}] ", ev.level), level_style));
+		spans.push(Span::styled(format!(" [{}] ", ev.level), level_style));
 		spans.push(Span::styled(
 			format!("{}: ", ev.target),
 			Style::default().fg(Color::Gray),

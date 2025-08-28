@@ -48,11 +48,17 @@ pub fn intern_path(path: impl AsRef<Path>) -> DirEntryId {
 	let path = path
 		.canonicalize()
 		.or_else(|e| {
-			warn!("Failed to canonicalize {path:?}, falling back to absolute: {e}");
+			warn!(
+				?path,
+				"Failed to canonicalize path, falling back to absolute: {e}"
+			);
 			std::path::absolute(path)
 		})
 		.unwrap_or_else(|e| {
-			error!("Failed to get absolute {path:?}, falling back to original: {e}");
+			error!(
+				?path,
+				"Failed to get absolute path, falling back to original: {e}"
+			);
 			path.to_path_buf()
 		});
 	let last = path.components().fold(None, |parent, seg| {
