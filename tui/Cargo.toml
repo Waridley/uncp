@@ -18,3 +18,4 @@ async-channel.workspace = true
 futures-lite.workspace = true
 dirs.workspace = true
 polars.workspace = true
+zstd = "0.13"

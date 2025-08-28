@@ -6949,6 +6949,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uncp",
+ "zstd",
 ]
 
 [[package]]

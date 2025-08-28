@@ -68,9 +68,13 @@ fn main() -> std::io::Result<()> {
 	let log_dir =
 		uncp::paths::default_cache_dir().unwrap_or_else(|| std::env::temp_dir().join("uncp"));
 	let _ = std::fs::create_dir_all(&log_dir);
-	let log_path = log_dir.join("tui.log");
+	let log_path = log_dir.join("tui.log.zst");
 	let file = std::fs::File::create(&log_path).expect("open log file");
-	let (nb, guard) = tracing_appender::non_blocking(file);
+	// Wrap the log file in a zstd encoder so logs are compressed on disk
+	let encoder = zstd::stream::write::Encoder::new(file, 0)
+		.expect("create zstd encoder")
+		.auto_finish();
+	let (nb, guard) = tracing_appender::non_blocking(encoder);
 	let (ui_layer, ui_err_handle) = UiLogLayer::new(10240);
 
 	tracing_subscriber::registry()
@@ -144,11 +148,22 @@ fn main() -> std::io::Result<()> {
 	drop(guard);
 	if let Ok(f) = std::fs::File::open(&log_path) {
 		let mut tail = VecDeque::with_capacity(80);
-		for line in std::io::BufReader::new(f).lines() {
-			if tail.len() >= 80 {
-				tail.pop_front();
+		match zstd::stream::read::Decoder::new(f) {
+			Ok(dec) => {
+				for line in std::io::BufReader::new(dec).lines() {
+					if tail.len() >= 80 {
+						tail.pop_front();
+					}
+					tail.push_back(line?);
+				}
 			}
-			tail.push_back(line?);
+			Err(e) => {
+				eprintln!(
+					"Failed to decode compressed log ({}). You can inspect it with: zstd -d {}",
+					e,
+					log_path.display()
+				);
+			}
 		}
 		eprintln!("\n---- uncp TUI logs (last 80 lines) ----");
 		for line in tail.into_iter() {
@@ -2500,9 +2515,11 @@ fn handle_mouse_event(
 	use crossterm::event::{MouseButton, MouseEventKind};
 
 	// Log mouse events for debugging
-	info!(
+	trace!(
 		"Mouse event: {:?} at ({}, {})",
-		mouse_event.kind, mouse_event.row, mouse_event.column
+		mouse_event.kind,
+		mouse_event.row,
+		mouse_event.column
 	);
 
 	// Only handle mouse events when no popup is active
