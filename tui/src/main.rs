@@ -35,7 +35,6 @@
 use std::collections::VecDeque;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_channel as channel;
@@ -60,7 +59,7 @@ use uncp::engine::{BackgroundEngine, EngineCommand, EngineEvent};
 use uncp::log_env_filter;
 use uncp::log_ui::UiLogLayer;
 use uncp::log_ui::{LevelToggles, LogDedup};
-use uncp::ui::PresentationState;
+use uncp::ui::{Action, AppState, PresentationState};
 
 const SPINNER: &[char] = &['⠋', '⠙', '⠸', '⠴', '⠦', '⠇'];
 
@@ -200,7 +199,7 @@ fn run(
 	debug!("TUI loop start");
 
 	// Initialize application state
-	let mut app_state = AppState::new();
+	let mut app_state = TuiState::new();
 	let (evt_rx, cmds) = initialize_engine(&mut app_state)?;
 
 	// Main event loop
@@ -220,79 +219,35 @@ fn run(
 /// - Engine state: Background engine status and progress
 /// - Presentation state: File data and UI display state
 /// - Table state: File table selection and scrolling
-struct AppState {
-	// === UI State ===
-	/// Current directory path being scanned
-	current_path: PathBuf,
-	/// Active path filter with include/exclude patterns
-	current_filter: uncp::PathFilter,
-	/// Stack of active popup dialogs
+struct TuiState {
+	// Shared, UI-agnostic app state
+	app: AppState,
+	// TUI-specific state
 	popup_stack: PopupStack,
-
-	// === Progress and Display State ===
-	/// Shared progress state for background tasks (thread-safe)
-	progress_state: Arc<Mutex<Option<String>>>,
-	/// Current spinner animation frame index
 	spinner_idx: usize,
-	/// Current progress message to display
-	progress_line: Option<String>,
-
-	// === Log State ===
-	/// Filter for logs to display in log popup
-	log_levels: LevelToggles,
-	/// Deduplicated log entries with occurrence counts
-	log_dedup: LogDedup,
-	/// Current scroll position in log popup
-	log_scroll: usize,
-
-	// === Engine State ===
-	/// Current file discovery progress information
-	current_discovery_progress: Option<uncp::systems::SystemProgress>,
-	/// Current file hashing progress information
-	current_hashing_progress: Option<uncp::systems::SystemProgress>,
-	/// Current engine status text
-	engine_status: String,
-	/// Processing speed in files per second
-	processing_speed: Option<f64>,
-	/// Timestamp of last progress update (for speed calculation)
-	last_progress_update: std::time::Instant,
-	/// Number of items processed at last update (for speed calculation)
-	last_processed_count: usize,
-
-	// === Presentation State ===
-	/// Current file data and UI display state from engine
-	pres: PresentationState,
-
-	// === Table State ===
-	/// Ratatui table widget state for selection and scrolling
 	table_state: TableState,
-	/// Currently selected row index
-	selected_idx: usize,
 }
 
-impl AppState {
+impl TuiState {
 	fn new() -> Self {
 		Self {
-			current_path: PathBuf::from("."),
-			current_filter: uncp::PathFilter::default(),
+			app: AppState::default(),
 			popup_stack: PopupStack::default(),
-			progress_state: Arc::new(Mutex::new(None)),
 			spinner_idx: 0,
-			progress_line: None,
-			log_levels: LevelToggles::default(),
-			log_dedup: LogDedup::new(),
-			log_scroll: 0,
-			current_discovery_progress: None,
-			current_hashing_progress: None,
-			engine_status: "Starting...".to_string(),
-			processing_speed: None,
-			last_progress_update: std::time::Instant::now(),
-			last_processed_count: 0,
-			pres: PresentationState::default()
-				.with_status("Press 's' to scan, 'h' to hash, 'r' to refresh, 'q' to quit"),
 			table_state: TableState::default(),
-			selected_idx: 0,
 		}
+	}
+}
+
+impl std::ops::Deref for TuiState {
+	type Target = AppState;
+	fn deref(&self) -> &Self::Target {
+		&self.app
+	}
+}
+impl std::ops::DerefMut for TuiState {
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		&mut self.app
 	}
 }
 
@@ -308,7 +263,7 @@ impl AppState {
 /// # Returns
 /// Tuple of (event_receiver, command_sender) for engine communication
 fn initialize_engine(
-	app_state: &mut AppState,
+	app_state: &mut TuiState,
 ) -> std::io::Result<(
 	smol::channel::Receiver<EngineEvent>,
 	smol::channel::Sender<EngineCommand>,
@@ -361,7 +316,7 @@ fn initialize_engine(
 fn main_event_loop(
 	terminal: &mut ratatui::DefaultTerminal,
 	ui_errs: &uncp::log_ui::UiLogQueueHandle,
-	app_state: &mut AppState,
+	app_state: &mut TuiState,
 	evt_rx: smol::channel::Receiver<EngineEvent>,
 	cmds: smol::channel::Sender<EngineCommand>,
 ) -> std::io::Result<()> {
@@ -424,7 +379,7 @@ fn main_event_loop(
 /// Process a user action and return true if the application should quit
 fn process_action(
 	action: Action,
-	app_state: &mut AppState,
+	app_state: &mut TuiState,
 	cmds: &smol::channel::Sender<EngineCommand>,
 	terminal: &mut ratatui::DefaultTerminal,
 	terminal_area: Rect,
@@ -579,7 +534,7 @@ fn process_action(
 
 /// Process path submission from the path input popup
 fn process_path_submission(
-	app_state: &mut AppState,
+	app_state: &mut TuiState,
 	cmds: &smol::channel::Sender<EngineCommand>,
 ) -> std::io::Result<()> {
 	if let Some(PopupState::PathInput { buffer }) = app_state.popup_stack.pop() {
@@ -650,7 +605,7 @@ fn process_path_submission(
 
 /// Process filter submission from the filter input popup
 fn process_filter_submission(
-	app_state: &mut AppState,
+	app_state: &mut TuiState,
 	cmds: &smol::channel::Sender<EngineCommand>,
 ) -> std::io::Result<()> {
 	if let Some(PopupState::FilterInput {
@@ -720,7 +675,7 @@ fn process_filter_submission(
 
 /// Process scan action
 fn process_scan_action(
-	app_state: &mut AppState,
+	app_state: &mut TuiState,
 	cmds: &smol::channel::Sender<EngineCommand>,
 ) -> std::io::Result<()> {
 	let path = app_state.current_path.clone();
@@ -747,7 +702,7 @@ fn process_scan_action(
 /// Calculates which table row was clicked based on the current terminal size
 /// and dynamic layout configuration, rather than using hard-coded values.
 fn process_mouse_selection(
-	app_state: &mut AppState,
+	app_state: &mut TuiState,
 	mouse_row: u16,
 	mouse_col: u16,
 	terminal_area: Rect,
@@ -774,14 +729,16 @@ fn process_mouse_selection(
 }
 
 /// Update progress state from the progress state mutex
-fn update_progress_state(app_state: &mut AppState) {
-	if let Ok(guard) = app_state.progress_state.lock() {
-		app_state.progress_line = guard.clone();
-	}
+fn update_progress_state(app_state: &mut TuiState) {
+	let new_line = match app_state.progress_state.lock() {
+		Ok(guard) => guard.clone(),
+		Err(_) => None,
+	};
+	app_state.progress_line = new_line;
 }
 
 /// Process engine events and update application state
-fn process_engine_events(app_state: &mut AppState, evt_rx: &smol::channel::Receiver<EngineEvent>) {
+fn process_engine_events(app_state: &mut TuiState, evt_rx: &smol::channel::Receiver<EngineEvent>) {
 	while let Ok(evt) = evt_rx.try_recv() {
 		match evt {
 			EngineEvent::SnapshotReady(snap) => {
@@ -887,7 +844,7 @@ fn process_engine_events(app_state: &mut AppState, evt_rx: &smol::channel::Recei
 }
 
 /// Update discovery progress and calculate processing speed
-fn update_discovery_progress(app_state: &mut AppState, progress: uncp::systems::SystemProgress) {
+fn update_discovery_progress(app_state: &mut TuiState, progress: uncp::systems::SystemProgress) {
 	debug!(
 		"TUI: Discovery progress: {}/{} - {:?}",
 		progress.processed_items, progress.total_items, progress.current_item
@@ -914,7 +871,7 @@ fn update_discovery_progress(app_state: &mut AppState, progress: uncp::systems::
 }
 
 /// Update hashing progress and calculate processing speed
-fn update_hashing_progress(app_state: &mut AppState, progress: uncp::systems::SystemProgress) {
+fn update_hashing_progress(app_state: &mut TuiState, progress: uncp::systems::SystemProgress) {
 	debug!(
 		"TUI: Hashing progress: {}/{} - {:?}",
 		progress.processed_items, progress.total_items, progress.current_item
@@ -941,7 +898,7 @@ fn update_hashing_progress(app_state: &mut AppState, progress: uncp::systems::Sy
 }
 
 /// Update UI state including progress display and log processing
-fn update_ui_state(app_state: &mut AppState, ui_errs: &uncp::log_ui::UiLogQueueHandle) {
+fn update_ui_state(app_state: &mut TuiState, ui_errs: &uncp::log_ui::UiLogQueueHandle) {
 	// Handle progress completion
 	if app_state.progress_line.as_deref() == Some("Scan complete") {
 		app_state.pres = app_state.pres.clone().with_status("Scan complete");
@@ -957,28 +914,40 @@ fn update_ui_state(app_state: &mut AppState, ui_errs: &uncp::log_ui::UiLogQueueH
 /// Render the UI
 fn render_ui(
 	terminal: &mut ratatui::DefaultTerminal,
-	app_state: &mut AppState,
+	app_state: &mut TuiState,
 	ui_errs: &uncp::log_ui::UiLogQueueHandle,
 ) -> std::io::Result<()> {
 	// Update spinner animation
-	if app_state.progress_line.is_some() {
+	if app_state.app.progress_line.is_some() {
 		app_state.spinner_idx = (app_state.spinner_idx + 1) % SPINNER.len();
 	}
 
 	terminal.draw(|f| {
+		let pres = &app_state.app.pres;
+		let popup_stack = &app_state.popup_stack;
+		let current_filter = &app_state.app.current_filter;
+		let engine_status = &app_state.app.engine_status;
+		let discovery_progress = &app_state.app.current_discovery_progress;
+		let hashing_progress = &app_state.app.current_hashing_progress;
+		let processing_speed = app_state.app.processing_speed;
+		let log_dedup = &app_state.app.log_dedup;
+		let log_scroll = app_state.app.log_scroll;
+		let log_levels = app_state.app.log_levels;
+		let table_state = &mut app_state.table_state;
+
 		let params = DrawParams {
-			pres: &app_state.pres,
-			popup_stack: &app_state.popup_stack,
-			current_filter: &app_state.current_filter,
-			engine_status: &app_state.engine_status,
-			discovery_progress: &app_state.current_discovery_progress,
-			hashing_progress: &app_state.current_hashing_progress,
-			processing_speed: app_state.processing_speed,
-			table_state: &mut app_state.table_state,
+			pres,
+			popup_stack,
+			current_filter,
+			engine_status,
+			discovery_progress,
+			hashing_progress,
+			processing_speed,
+			table_state,
 			ui_errs,
-			log_dedup: &app_state.log_dedup,
-			log_scroll: app_state.log_scroll,
-			log_levels: app_state.log_levels,
+			log_dedup,
+			log_scroll,
+			log_levels,
 		};
 		draw(f, params);
 	})?;
@@ -1161,38 +1130,6 @@ fn format_bytes(size: u64) -> String {
 	} else {
 		format!("{:.1} {}", size_f, UNITS[unit_index])
 	}
-}
-
-#[derive(Debug, Clone, Copy)]
-enum Action {
-	Quit,
-	Refresh,
-	Scan,
-	Hash,
-	// Popup management
-	ShowPathInput,
-	ShowFilterInput,
-	ToggleLogView,
-	ClosePopup,
-	// Popup-specific actions
-	SubmitPath,
-	SubmitFilter,
-	FilterSwitchColumn,
-	// Navigation
-	Up,
-	Down,
-	PageUp,
-	PageDown,
-	Home,
-	End,
-	SelectRow(u16, u16), // row, column
-	// Terminal events
-	Resize(u16, u16), // width, height
-	// Log-specific actions
-	ToggleLogLevel(Level),
-	LogScrollUp,
-	LogScrollDown,
-	LogClear,
 }
 
 /// Parameters for the main draw function to avoid too many arguments.

@@ -72,3 +72,102 @@ impl PresentationState {
 		self.pending_hash_scoped.unwrap_or(self.pending_hash)
 	}
 }
+
+use tracing::Level;
+
+/// Cross-platform UI actions shared by TUI and GUI
+#[derive(Debug, Clone, Copy)]
+pub enum Action {
+	// App lifecycle
+	Quit,
+	Refresh,
+	// Operations
+	Scan,
+	Hash,
+	// Popup management
+	ShowPathInput,
+	ShowFilterInput,
+	ToggleLogView,
+	ClosePopup,
+	// Popup-specific actions
+	SubmitPath,
+	SubmitFilter,
+	FilterSwitchColumn,
+	// Navigation
+	Up,
+	Down,
+	PageUp,
+	PageDown,
+	Home,
+	End,
+	/// Select a row at (row, column) in the current list/table
+	SelectRow(u16, u16),
+	// Terminal / viewport events
+	/// New viewport size (width, height)
+	Resize(u16, u16),
+	// Log-specific actions
+	ToggleLogLevel(Level),
+	LogScrollUp,
+	LogScrollDown,
+	LogClear,
+}
+
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use crate::log_ui::{LevelToggles, LogDedup};
+
+/// Shared application state for UI clients (TUI/GUI)
+#[derive(Debug, Clone)]
+pub struct AppState {
+	// === UI State ===
+	pub current_path: PathBuf,
+	pub current_filter: crate::PathFilter,
+
+	// === Progress and Display State ===
+	pub progress_state: Arc<Mutex<Option<String>>>,
+	pub progress_line: Option<String>,
+
+	// === Log State ===
+	pub log_levels: LevelToggles,
+	pub log_dedup: LogDedup,
+	pub log_scroll: usize,
+
+	// === Engine State ===
+	pub current_discovery_progress: Option<crate::systems::SystemProgress>,
+	pub current_hashing_progress: Option<crate::systems::SystemProgress>,
+	pub engine_status: String,
+	pub processing_speed: Option<f64>,
+	pub last_progress_update: Instant,
+	pub last_processed_count: usize,
+
+	// === Presentation State ===
+	pub pres: PresentationState,
+
+	// === Selection State ===
+	pub selected_idx: usize,
+}
+
+impl Default for AppState {
+	fn default() -> Self {
+		Self {
+			current_path: PathBuf::from("."),
+			current_filter: crate::PathFilter::default(),
+			progress_state: Arc::new(Mutex::new(None)),
+			progress_line: None,
+			log_levels: LevelToggles::default(),
+			log_dedup: LogDedup::new(),
+			log_scroll: 0,
+			current_discovery_progress: None,
+			current_hashing_progress: None,
+			engine_status: "Starting...".to_string(),
+			processing_speed: None,
+			last_progress_update: Instant::now(),
+			last_processed_count: 0,
+			pres: PresentationState::default()
+				.with_status("Press 's' to scan, 'h' to hash, 'r' to refresh, 'q' to quit"),
+			selected_idx: 0,
+		}
+	}
+}
